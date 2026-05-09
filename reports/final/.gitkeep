@@ -1,0 +1,30 @@
+# reports/final/.gitkeep
+# =============================================================================
+# This directory stores all FINAL consolidated reports.
+# Reports are grouped by scan_id — one subdirectory per scan.
+# =============================================================================
+#
+# FUTURE DIRECTORY STRUCTURE:
+#
+#   reports/final/
+#   ├── SCAN-550e8400/
+#   │   ├── final-risk-score.json         — Combined static + runtime risk score
+#   │   ├── deployment-decision.json      — Final ALLOW / REVIEW / BLOCK decision
+#   │   └── combined-summary.json         — Executive summary across all stages
+#   │
+#   ├── SCAN-a1b2c3d4/
+#   │   └── ...
+#   │
+#   └── SCAN-ff001122/
+#       └── ...
+#
+# DESIGN NOTES:
+#   - Final reports represent the authoritative security assessment for a scan
+#   - The deployment-decision.json records the outcome visible in the future dashboard
+#   - The combined-summary.json is the primary input for future dashboard visualization
+#   - All final reports include the scan_id, repository_url, and commit_sha
+#     to provide full context for the decision
+#
+# All JSON report files are excluded from Git via .gitignore.
+# Only this .gitkeep file is tracked by Git.
+# =============================================================================

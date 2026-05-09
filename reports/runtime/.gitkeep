@@ -1,0 +1,30 @@
+# reports/runtime/.gitkeep
+# =============================================================================
+# This directory stores all RUNTIME validation reports.
+# Reports are grouped by scan_id — one subdirectory per scan.
+# =============================================================================
+#
+# FUTURE DIRECTORY STRUCTURE:
+#
+#   reports/runtime/
+#   ├── SCAN-550e8400/
+#   │   ├── prowler-report.json                  — Raw Prowler output
+#   │   ├── normalized-runtime-findings.json     — Normalized findings with scan_id
+#   │   └── runtime-risk-score.json              — Runtime risk score component
+#   │
+#   ├── SCAN-a1b2c3d4/
+#   │   └── ...
+#   │
+#   └── SCAN-ff001122/
+#       └── ...
+#
+# DESIGN NOTES:
+#   - Each scan_id subdirectory is completely isolated
+#   - Runtime findings are linked to their scan_id, which traces back to the
+#     specific repository URL, branch, and commit SHA that was scanned
+#   - Prowler targets resources tagged with the scan_id in the AWS sandbox,
+#     ensuring runtime findings are attributed to the correct scan
+#
+# All JSON report files are excluded from Git via .gitignore.
+# Only this .gitkeep file is tracked by Git.
+# =============================================================================

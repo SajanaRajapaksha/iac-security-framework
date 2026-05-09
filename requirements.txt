@@ -1,0 +1,64 @@
+# =============================================================================
+# FILE: requirements.txt
+# PROJECT: iac-security-framework
+# PURPOSE: Python dependencies for the IaC security framework scripts
+# =============================================================================
+#
+# PHASE 1 (Current):
+#   All scripts use Python standard library only.
+#   No external dependencies required for the initial implementation.
+#
+# Python Standard Library Modules Used (no installation required):
+#   - uuid          (Upload ID and Evidence ID generation)
+#   - hashlib       (SHA256 file and evidence package hashing)
+#   - json          (JSON reading, writing, and serialisation)
+#   - os            (File system and environment variable operations)
+#   - pathlib       (Modern path handling)
+#   - datetime      (UTC timestamp generation)
+#   - argparse      (CLI argument parsing for scripts)
+#   - sys           (System exit codes)
+#
+# =============================================================================
+# FUTURE DEPENDENCIES (to be added in later phases):
+# =============================================================================
+#
+# Phase 2+ (uncomment when implementing external integrations):
+#
+# requests>=2.31.0
+#   Purpose: HTTP requests for future API integrations (dashboard backend)
+#
+# boto3>=1.34.0
+#   Purpose: AWS SDK for Python — direct AWS API interactions
+#            May be needed for sandbox validation and resource querying
+#
+# pydantic>=2.6.0
+#   Purpose: Data validation and serialisation for JSON schemas
+#
+# pytest>=8.0.0
+#   Purpose: Unit testing framework for all Python scripts
+#
+# pytest-cov>=4.1.0
+#   Purpose: Test coverage reporting
+#
+# black>=24.0.0
+#   Purpose: Python code formatting (consistent style across scripts)
+#
+# flake8>=7.0.0
+#   Purpose: Python linting (code quality checks)
+#
+# =============================================================================
+# TOOL DEPENDENCIES (installed separately — not via pip):
+# =============================================================================
+#
+# These tools are installed directly in the GitHub Actions workflow environment:
+#
+#   Terraform CLI   — via hashicorp/setup-terraform GitHub Action
+#   Checkov         — via: pip install checkov
+#   Conftest        — via: brew install conftest (or binary download)
+#   Prowler         — via: pip install prowler
+#   OPA CLI         — via binary download (optional — Conftest wraps OPA)
+#
+# =============================================================================
+# When adding external dependencies, pin to specific versions for
+# reproducibility and security (avoid floating version ranges where possible).
+# =============================================================================

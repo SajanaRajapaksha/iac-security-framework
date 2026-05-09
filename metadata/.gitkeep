@@ -1,0 +1,20 @@
+# metadata/.gitkeep
+# =============================================================================
+# This directory will store all UPLOAD METADATA files generated at pipeline start.
+#
+# Future files stored here:
+#
+#   upload-<upload_id>.json       — Upload metadata file per Terraform upload
+#
+# Each upload metadata file contains:
+#   - upload_id:       Unique identifier (TF-UPLOAD-<UUID>)
+#   - upload_time:     UTC timestamp of the upload
+#   - uploaded_by:     User or system that triggered the upload
+#   - terraform_dir:   Path to the uploaded Terraform directory
+#   - file_hashes:     SHA256 hash of each .tf file (tamper detection)
+#   - file_count:      Number of Terraform files in the upload
+#   - metadata_hash:   SHA256 hash of the metadata JSON itself
+#
+# The upload metadata file is the ROOT ANCHOR of the forensic evidence chain.
+# All subsequent pipeline stages reference this file via the upload_id.
+# =============================================================================

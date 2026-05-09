@@ -1,0 +1,52 @@
+# repositories/metadata/.gitkeep
+# =============================================================================
+# PURPOSE: Preserve this directory in Git version control
+# =============================================================================
+#
+# This directory stores repository scan metadata files.
+# One JSON metadata file is created per scan at the start of every pipeline run.
+#
+# FUTURE FILES:
+#
+#   repositories/metadata/
+#   ├── scan-SCAN-550e8400.json       ← Metadata for scan SCAN-550e8400
+#   ├── scan-SCAN-a1b2c3d4.json
+#   └── scan-SCAN-ff001122.json
+#
+# SCAN METADATA FILE CONTENT (future):
+#   {
+#     "scan_id":              "SCAN-550e8400",
+#     "repository_url":       "https://github.com/org/repo",
+#     "repository_branch":    "main",
+#     "commit_sha":           "<git commit SHA at time of clone>",
+#     "clone_path":           "repositories/cloned/SCAN-550e8400/",
+#     "scan_triggered_by":    "<user or system>",
+#     "scan_start_time":      "<UTC ISO 8601 timestamp>",
+#     "terraform_files_discovered": [
+#       "main.tf",
+#       "modules/network/main.tf",
+#       "environments/dev/main.tf"
+#     ],
+#     "terraform_root_modules": [
+#       ".",
+#       "modules/network",
+#       "modules/security"
+#     ],
+#     "file_hashes": {
+#       "main.tf":                    "<SHA256>",
+#       "modules/network/main.tf":    "<SHA256>"
+#     },
+#     "total_tf_files":       <int>,
+#     "metadata_hash":        "<SHA256 of this metadata JSON>"
+#   }
+#
+# RELATIONSHIP TO FORENSIC CHAIN:
+#   - This metadata file is the ROOT ANCHOR of the forensic evidence chain
+#   - All subsequent pipeline stages reference this file via scan_id
+#   - The metadata_hash enables tamper detection of the metadata record itself
+#   - Every artifact produced by the pipeline includes the scan_id field
+#
+# IMPORTANT:
+#   - Metadata files are excluded from Git via .gitignore (metadata/*.json)
+#   - Only this .gitkeep file is tracked by Git
+# =============================================================================

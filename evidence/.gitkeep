@@ -1,0 +1,42 @@
+# evidence/.gitkeep
+# =============================================================================
+# This directory stores all FORENSIC EVIDENCE packages.
+# Evidence packages are grouped by scan_id — one subdirectory per scan.
+# =============================================================================
+#
+# FUTURE DIRECTORY STRUCTURE:
+#
+#   evidence/
+#   ├── SCAN-550e8400/
+#   │   └── evidence-EV-abc12345.json     — Forensic evidence package for this scan
+#   │
+#   ├── SCAN-a1b2c3d4/
+#   │   └── evidence-EV-def67890.json
+#   │
+#   └── SCAN-ff001122/
+#       └── evidence-EV-ghi11223.json
+#
+# FORENSIC EVIDENCE PACKAGE (per scan):
+#   Each evidence-<evidence_id>.json file contains the COMPLETE forensic record
+#   for a single scan run:
+#     - scan_id                   — Unique Scan ID for this pipeline run
+#     - repository_url            — URL of the scanned repository
+#     - commit_sha                — Exact git commit SHA scanned
+#     - scan_metadata             — Full scan context record
+#     - terraform_discovery       — All discovered Terraform modules
+#     - checkov_findings          — All static IaC findings
+#     - policy_violations         — All OPA/Rego policy violations
+#     - runtime_findings          — All Prowler runtime findings
+#     - static_risk_score         — Initial risk score
+#     - final_risk_score          — Combined risk score and trust score
+#     - final_decision            — ALLOW / REVIEW / BLOCK
+#     - evidence_id               — Unique identifier for this evidence package
+#     - evidence_hash             — SHA256 integrity hash of the complete package
+#
+# CHAIN OF CUSTODY:
+#   Repository URL → Clone → Scan ID → All findings → Decision → Evidence
+#   Every link is captured, timestamped, and hashed for forensic integrity.
+#
+# All JSON evidence files are excluded from Git via .gitignore.
+# Only this .gitkeep file is tracked by Git.
+# =============================================================================

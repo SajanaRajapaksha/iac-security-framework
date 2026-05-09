@@ -1,0 +1,20 @@
+# runtime-validation/prowler/.gitkeep
+# =============================================================================
+# This directory is reserved for future Prowler runtime validation integration.
+#
+# Future contents:
+#   - Custom Prowler check configurations
+#   - Prowler compliance framework mappings (CIS, NIST, SOC2)
+#   - Prowler severity override configurations
+#   - Prowler output templates
+#
+# Prowler will be run against the AWS sandbox environment after deployment,
+# targeting the specific resources deployed by the current upload_id.
+#
+# Commands (future):
+#   prowler aws \
+#     --output-formats json \
+#     --output-directory reports/runtime/ \
+#     --severity critical high medium \
+#     --tags upload_id=TF-UPLOAD-<UUID>
+# =============================================================================

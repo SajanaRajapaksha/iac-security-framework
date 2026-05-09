@@ -1,0 +1,19 @@
+# runtime-validation/sandbox/.gitkeep
+# =============================================================================
+# This directory is reserved for future AWS sandbox deployment configurations.
+#
+# Future contents:
+#   - Sandbox Terraform backend configuration
+#   - Sandbox AWS account configuration
+#   - Sandbox IAM role definitions (minimum privilege for deployment)
+#   - Sandbox network/VPC baseline configuration
+#   - Post-deployment cleanup scripts (terraform destroy)
+#   - Sandbox resource tagging enforcement configuration
+#
+# AWS Sandbox Design (future):
+#   - Isolated AWS account separate from any production environment
+#   - Auto-destroy after pipeline run (prevent cost accumulation)
+#   - Resource tagging with upload_id for targeted Prowler scanning
+#   - CloudTrail enabled in sandbox for all API activity logging
+#   - GuardDuty enabled for threat detection during runtime validation
+# =============================================================================

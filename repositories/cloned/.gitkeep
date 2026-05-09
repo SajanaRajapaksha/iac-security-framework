@@ -1,0 +1,43 @@
+# repositories/cloned/.gitkeep
+# =============================================================================
+# PURPOSE: Preserve this directory in Git version control
+# =============================================================================
+#
+# This directory will store cloned copies of scanned GitHub repositories.
+#
+# ISOLATION MODEL — Each repository scan is fully isolated:
+#
+#   repositories/cloned/
+#   ├── SCAN-550e8400/          ← One folder per scan (named by Scan ID)
+#   │   ├── main.tf             ← Cloned repo files preserved as-is
+#   │   ├── variables.tf
+#   │   └── modules/
+#   │       └── network/
+#   │           └── main.tf
+#   ├── SCAN-a1b2c3d4/          ← Separate scan of a different repo (or same repo)
+#   │   └── terraform/
+#   │       └── aws/
+#   │           └── main.tf
+#   └── SCAN-ff001122/
+#       └── ...
+#
+# KEY DESIGN PROPERTIES:
+#
+#   - Multiple repositories can be scanned simultaneously (different Scan IDs)
+#   - The same repository can be scanned multiple times (each scan gets a new Scan ID)
+#   - Scan history is preserved by retaining each cloned directory
+#   - Evidence is isolated per Scan ID — no cross-contamination between scans
+#   - The original repository structure is preserved unchanged inside each scan folder
+#     (the framework adapts to the repo, not vice versa)
+#
+# CLONING BEHAVIOUR (future — scripts/clone_repository.py):
+#   - `git clone <repository_url> repositories/cloned/<scan_id>/`
+#   - Specific branch can be targeted (defaults to main/master)
+#   - Shallow clone supported for large repositories
+#   - Clone timestamp and commit SHA recorded in scan metadata
+#
+# IMPORTANT:
+#   - The contents of repositories/cloned/ are NOT committed to this repository
+#   - Each scan directory is excluded via .gitignore (repositories/cloned/*)
+#   - Only this .gitkeep file is tracked by Git
+# =============================================================================

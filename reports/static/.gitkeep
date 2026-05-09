@@ -1,0 +1,34 @@
+# reports/static/.gitkeep
+# =============================================================================
+# This directory stores all STATIC analysis reports.
+# Reports are grouped by scan_id — one subdirectory per scan.
+# =============================================================================
+#
+# FUTURE DIRECTORY STRUCTURE:
+#
+#   reports/static/
+#   ├── SCAN-550e8400/
+#   │   ├── terraform-discovery.json      — Discovered Terraform modules
+#   │   ├── checkov-report.json           — Raw Checkov output
+#   │   ├── normalized-findings.json      — Normalized findings with scan_id
+#   │   ├── policy-results.json           — OPA/Rego/Conftest violations
+#   │   └── static-risk-score.json        — Initial risk score (pre-deployment)
+#   │
+#   ├── SCAN-a1b2c3d4/
+#   │   ├── terraform-discovery.json
+#   │   ├── checkov-report.json
+#   │   └── ...
+#   │
+#   └── SCAN-ff001122/
+#       └── ...
+#
+# DESIGN NOTES:
+#   - Each scan_id subdirectory is completely isolated
+#   - Multiple scans (different repos, or same repo scanned again) produce
+#     separate, non-overlapping report directories
+#   - All files inside each subdirectory carry the scan_id field in their JSON
+#   - Entire directories are uploaded as GitHub Actions Artifacts per scan_id
+#
+# All JSON report files are excluded from Git via .gitignore.
+# Only this .gitkeep file is tracked by Git.
+# =============================================================================

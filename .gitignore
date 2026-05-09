@@ -1,0 +1,259 @@
+# =============================================================================
+# .gitignore
+# PROJECT: iac-security-framework
+# =============================================================================
+
+# =============================================================================
+# CLONED REPOSITORIES (runtime-generated — do not commit cloned repo content)
+# =============================================================================
+
+# Exclude all cloned repository content (each scan clones into its own subdirectory)
+repositories/cloned/*
+
+# Preserve the directory structure via .gitkeep
+!repositories/cloned/.gitkeep
+
+# Exclude scan metadata JSON files
+repositories/metadata/*.json
+
+# Preserve the metadata directory
+!repositories/metadata/.gitkeep
+
+# =============================================================================
+# TERRAFORM
+# =============================================================================
+
+# Terraform working directory (created by terraform init)
+.terraform/
+
+# Terraform state files — NEVER commit state files
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Terraform lock file (can be committed, but excluded for flexibility)
+.terraform.lock.hcl
+
+# Terraform plan output files
+*.tfplan
+*.tfplan.bin
+plan.bin
+plan.json
+
+# Terraform crash log
+crash.log
+crash.*.log
+
+# Terraform variable files (may contain sensitive values)
+*.tfvars
+*.tfvars.json
+!example.tfvars
+
+# Terraform override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# =============================================================================
+# PYTHON
+# =============================================================================
+
+# Python bytecode cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python package distribution
+*.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.env/
+
+# pip cache
+pip-wheel-metadata/
+
+# pytest cache
+.pytest_cache/
+.cache/
+
+# Coverage reports
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# mypy cache
+.mypy_cache/
+
+# =============================================================================
+# ENVIRONMENT & SECRETS
+# =============================================================================
+
+# Environment variable files — NEVER commit secrets
+.env
+.env.*
+.env.local
+.env.production
+.env.staging
+
+# AWS credentials — NEVER commit
+.aws/
+*.pem
+*.key
+
+# =============================================================================
+# REPORTS (runtime-generated — do not commit report outputs)
+# =============================================================================
+
+# Exclude all scan-id subdirectories and their report files
+reports/static/SCAN-*/
+reports/runtime/SCAN-*/
+reports/final/SCAN-*/
+
+# Also exclude any JSON/SARIF files placed directly in the reports directories
+reports/static/*.json
+reports/static/*.sarif
+reports/runtime/*.json
+reports/runtime/*.sarif
+reports/final/*.json
+
+# BUT preserve directory structure via .gitkeep files
+!reports/static/.gitkeep
+!reports/runtime/.gitkeep
+!reports/final/.gitkeep
+
+# =============================================================================
+# EVIDENCE (runtime-generated — do not commit evidence packages)
+# =============================================================================
+
+# Exclude all scan-id subdirectories and their evidence files
+evidence/SCAN-*/
+evidence/*.json
+
+# Preserve directory
+!evidence/.gitkeep
+
+# =============================================================================
+# METADATA (runtime-generated — do not commit scan metadata)
+# NOTE: Scan metadata is now stored in repositories/metadata/ (see above)
+#       The root metadata/ directory is no longer used.
+# =============================================================================
+
+metadata/*.json
+
+# Preserve directory (kept for backwards compatibility)
+!metadata/.gitkeep
+
+# =============================================================================
+# RUNTIME VALIDATION OUTPUTS
+# =============================================================================
+
+runtime-validation/prowler/*.json
+runtime-validation/prowler/*.csv
+runtime-validation/sandbox/*.tfstate
+runtime-validation/sandbox/*.tfstate.*
+
+# Preserve directories
+!runtime-validation/prowler/.gitkeep
+!runtime-validation/sandbox/.gitkeep
+
+# =============================================================================
+# TERRAFORM UPLOADS (user-uploaded files — handled by upload system)
+# =============================================================================
+
+# Do not commit user-uploaded Terraform files to the main repo
+# These are managed by the upload system per Upload ID
+terraform/uploads/*/
+
+# Preserve the uploads directory itself
+!terraform/uploads/.gitkeep
+
+# =============================================================================
+# OPERATING SYSTEM FILES
+# =============================================================================
+
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Windows
+desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+
+# =============================================================================
+# EDITOR & IDE FILES
+# =============================================================================
+
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# JetBrains IDEs (PyCharm, IntelliJ, etc.)
+.idea/
+*.iml
+*.iws
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*#
+.#*
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# =============================================================================
+# NODE.JS (for future frontend/backend)
+# =============================================================================
+
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm/
+.yarn/
+
+# =============================================================================
+# LOGS
+# =============================================================================
+
+*.log
+logs/
+npm-debug.log
+
+# =============================================================================
+# MISCELLANEOUS
+# =============================================================================
+
+# Archive files
+*.zip
+*.tar.gz
+*.tar.bz2
+*.7z
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
