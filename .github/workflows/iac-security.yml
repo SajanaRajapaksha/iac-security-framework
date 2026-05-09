@@ -1,202 +1,245 @@
-# =============================================================================
-# FILE: .github/workflows/iac-security.yml
-# PROJECT: iac-security-framework
-# PURPOSE: GitHub Actions CI/CD pipeline for forensic-ready IaC security scanning
-# =============================================================================
-#
-# INPUT MODEL:
-#   This pipeline accepts a GitHub repository URL as its primary input.
-#   It does NOT require a pre-uploaded Terraform directory.
-#   The framework clones and dynamically analyses any provided repository.
-#
-# FUTURE WORKFLOW STAGES (to be implemented incrementally):
-#
-# STAGE 1 — REPOSITORY CLONING & SCAN INITIALISATION
-#   - Accept repository URL and branch as workflow inputs
-#   - Run clone_repository.py:
-#       - Generate unique scan_id (SCAN-<UUID-prefix>)
-#       - Clone repository into repositories/cloned/<scan_id>/
-#       - Record commit SHA and clone timestamp
-#   - Run generate_scan_metadata.py:
-#       - Calculate SHA256 hashes of all discovered .tf files
-#       - Assemble and save scan metadata to repositories/metadata/
-#
-# STAGE 2 — TERRAFORM DISCOVERY
-#   - Run discover_terraform.py against repositories/cloned/<scan_id>/
-#   - Recursively find all .tf files
-#   - Identify Terraform root modules (supports flat, multi-module, monorepos)
-#   - Save terraform-discovery.json to reports/static/<scan_id>/
-#
-# STAGE 3 — TERRAFORM STATIC VALIDATION
-#   - For each discovered root module:
-#       - Run: terraform fmt -check    (enforce formatting standards)
-#       - Run: terraform init          (initialise provider plugins)
-#       - Run: terraform validate      (validate HCL syntax and structure)
-#   - Capture output and attach scan_id to results
-#
-# STAGE 4 — STATIC IAC MISCONFIGURATION SCANNING (Checkov)
-#   - Run Checkov against each discovered root module directory
-#   - Output results as JSON to reports/static/<scan_id>/checkov-report.json
-#   - Run normalize_checkov.py to normalise findings and tag with scan_id
-#   - Save normalized-findings.json to reports/static/<scan_id>/
-#
-# STAGE 5 — POLICY-AS-CODE VALIDATION (OPA / Rego / Conftest)
-#   - Run Conftest with policies/terraform.rego
-#   - Run Conftest with policies/aws-security.rego
-#   - Capture policy violations and attach scan_id
-#   - Save policy-results.json to reports/static/<scan_id>/
-#
-# STAGE 6 — INITIAL STATIC RISK SCORING
-#   - Run scripts/risk_score.py
-#   - Combine Checkov findings + OPA policy violations
-#   - Classify deployment decision: ALLOW / REVIEW / BLOCK
-#   - Save static-risk-score.json to reports/static/<scan_id>/
-#
-# STAGE 7 — AWS SANDBOX DEPLOYMENT
-#   - Deploy discovered Terraform root modules to isolated AWS sandbox account
-#   - Tag all deployed resources with scan_id for targeted Prowler scanning
-#   - Capture deployment metadata (resources created, ARNs, timestamps)
-#
-# STAGE 8 — RUNTIME CLOUD SECURITY VALIDATION (Prowler)
-#   - Run Prowler against sandbox resources tagged with scan_id
-#   - Output Prowler findings as JSON to reports/runtime/<scan_id>/
-#   - Run normalize_prowler.py to normalise runtime findings with scan_id
-#
-# STAGE 9 — FINAL RUNTIME-AWARE RISK SCORING
-#   - Run scripts/runtime_risk_score.py
-#   - Combine static findings + runtime findings
-#   - Detect infrastructure drift (runtime vs static discrepancies)
-#   - Adjust deployment trust score
-#   - Save final reports to reports/final/<scan_id>/
-#
-# STAGE 10 — FORENSIC EVIDENCE PACKAGE GENERATION
-#   - Run scripts/forensic_log.py
-#   - Assemble all evidence: scan metadata, terraform discovery, static findings,
-#     runtime findings, risk scores, deployment decision
-#   - Generate evidence_id (EV-<UUID>) and SHA256 integrity hash
-#   - Save forensic evidence package to evidence/<scan_id>/
-#
-# STAGE 11 — ARTIFACT UPLOAD & ARCHIVAL
-#   - Upload reports/static/<scan_id>/ as GitHub Actions Artifact
-#   - Upload reports/runtime/<scan_id>/ as GitHub Actions Artifact
-#   - Upload reports/final/<scan_id>/ as GitHub Actions Artifact
-#   - Upload evidence/<scan_id>/ as GitHub Actions Artifact
-#   - All artifacts tagged with scan_id for retrieval
-#
-# =============================================================================
-# PLACEHOLDER — Full workflow implementation will follow in future phases
-# =============================================================================
-
-name: IaC Security Framework Pipeline
+name: IaC Security Framework
 
 on:
-  # FUTURE: Trigger on push containing a repository URL input file
-  push:
-    branches:
-      - main
-  # Manual trigger with repository URL and branch as inputs
   workflow_dispatch:
     inputs:
-      repository_url:
-        description: 'GitHub repository URL to scan (e.g. https://github.com/org/repo)'
+      repo_url:
+        description: "GitHub repository URL to scan"
         required: true
-        default: ''
-      repository_branch:
-        description: 'Branch to scan (defaults to main)'
+      branch:
+        description: "Branch to scan"
         required: false
-        default: 'main'
+        default: "main"
 
 jobs:
-  # ==========================================================================
-  # PLACEHOLDER JOB — Replace with real implementation in future phases
-  # ==========================================================================
-  iac-security-pipeline:
-    name: IaC Forensic Security Pipeline
+  setup-test:
     runs-on: ubuntu-latest
 
     steps:
-      # -----------------------------------------------------------------------
-      # STEP 1: Checkout this framework repository
-      # -----------------------------------------------------------------------
-      - name: Checkout Framework Repository
+      - name: Checkout framework repository
         uses: actions/checkout@v4
 
-      # -----------------------------------------------------------------------
-      # STEP 2: Set up Python environment
-      # FUTURE: Install requirements from requirements.txt
-      # -----------------------------------------------------------------------
-      - name: Set up Python
+      - name: Print input values
+        run: |
+          echo "Repo URL: ${{ github.event.inputs.repo_url }}"
+          echo "Branch: ${{ github.event.inputs.branch }}"
+
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
-      # -----------------------------------------------------------------------
-      # STEP 3: Set up Terraform CLI
-      # FUTURE: Use specific Terraform version for reproducibility
-      # -----------------------------------------------------------------------
-      - name: Set up Terraform
+      - name: Check Python
+        run: python --version
+
+      - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: '1.7.0'
+          terraform_wrapper: false
 
-      # -----------------------------------------------------------------------
-      # PLACEHOLDER STEPS — Will be expanded in future implementation phases
-      # -----------------------------------------------------------------------
+      - name: Check Terraform
+        run: terraform version
 
-      # FUTURE STEP: Clone target repository and generate scan_id
-      # - run: python scripts/clone_repository.py
-      #     --url ${{ github.event.inputs.repository_url }}
-      #     --branch ${{ github.event.inputs.repository_branch }}
 
-      # FUTURE STEP: Generate scan metadata and file hashes
-      # - run: python scripts/generate_scan_metadata.py
 
-      # FUTURE STEP: Recursively discover Terraform root modules
-      # - run: python scripts/discover_terraform.py
 
-      # FUTURE STEP: Terraform format check (per root module)
-      # - run: terraform fmt -check <root_module_path>
+# # =============================================================================
+# # FILE: .github/workflows/iac-security.yml
+# # PROJECT: iac-security-framework
+# # PURPOSE: GitHub Actions CI/CD pipeline for forensic-ready IaC security scanning
+# # =============================================================================
+# #`
+# # INPUT MODEL:
+# #   This pipeline accepts a GitHub repository URL as its primary input.
+# #   It does NOT require a pre-uploaded Terraform directory.
+# #   The framework clones and dynamically analyses any provided repository.
+# #
+# # FUTURE WORKFLOW STAGES (to be implemented incrementally):
+# #
+# # STAGE 1 — REPOSITORY CLONING & SCAN INITIALISATION
+# #   - Accept repository URL and branch as workflow inputs
+# #   - Run clone_repository.py:
+# #       - Generate unique scan_id (SCAN-<UUID-prefix>)
+# #       - Clone repository into repositories/cloned/<scan_id>/
+# #       - Record commit SHA and clone timestamp
+# #   - Run generate_scan_metadata.py:
+# #       - Calculate SHA256 hashes of all discovered .tf files
+# #       - Assemble and save scan metadata to repositories/metadata/
+# #
+# # STAGE 2 — TERRAFORM DISCOVERY
+# #   - Run discover_terraform.py against repositories/cloned/<scan_id>/
+# #   - Recursively find all .tf files
+# #   - Identify Terraform root modules (supports flat, multi-module, monorepos)
+# #   - Save terraform-discovery.json to reports/static/<scan_id>/
+# #
+# # STAGE 3 — TERRAFORM STATIC VALIDATION
+# #   - For each discovered root module:
+# #       - Run: terraform fmt -check    (enforce formatting standards)
+# #       - Run: terraform init          (initialise provider plugins)
+# #       - Run: terraform validate      (validate HCL syntax and structure)
+# #   - Capture output and attach scan_id to results
+# #
+# # STAGE 4 — STATIC IAC MISCONFIGURATION SCANNING (Checkov)
+# #   - Run Checkov against each discovered root module directory
+# #   - Output results as JSON to reports/static/<scan_id>/checkov-report.json
+# #   - Run normalize_checkov.py to normalise findings and tag with scan_id
+# #   - Save normalized-findings.json to reports/static/<scan_id>/
+# #
+# # STAGE 5 — POLICY-AS-CODE VALIDATION (OPA / Rego / Conftest)
+# #   - Run Conftest with policies/terraform.rego
+# #   - Run Conftest with policies/aws-security.rego
+# #   - Capture policy violations and attach scan_id
+# #   - Save policy-results.json to reports/static/<scan_id>/
+# #
+# # STAGE 6 — INITIAL STATIC RISK SCORING
+# #   - Run scripts/risk_score.py
+# #   - Combine Checkov findings + OPA policy violations
+# #   - Classify deployment decision: ALLOW / REVIEW / BLOCK
+# #   - Save static-risk-score.json to reports/static/<scan_id>/
+# #
+# # STAGE 7 — AWS SANDBOX DEPLOYMENT
+# #   - Deploy discovered Terraform root modules to isolated AWS sandbox account
+# #   - Tag all deployed resources with scan_id for targeted Prowler scanning
+# #   - Capture deployment metadata (resources created, ARNs, timestamps)
+# #
+# # STAGE 8 — RUNTIME CLOUD SECURITY VALIDATION (Prowler)
+# #   - Run Prowler against sandbox resources tagged with scan_id
+# #   - Output Prowler findings as JSON to reports/runtime/<scan_id>/
+# #   - Run normalize_prowler.py to normalise runtime findings with scan_id
+# #
+# # STAGE 9 — FINAL RUNTIME-AWARE RISK SCORING
+# #   - Run scripts/runtime_risk_score.py
+# #   - Combine static findings + runtime findings
+# #   - Detect infrastructure drift (runtime vs static discrepancies)
+# #   - Adjust deployment trust score
+# #   - Save final reports to reports/final/<scan_id>/
+# #
+# # STAGE 10 — FORENSIC EVIDENCE PACKAGE GENERATION
+# #   - Run scripts/forensic_log.py
+# #   - Assemble all evidence: scan metadata, terraform discovery, static findings,
+# #     runtime findings, risk scores, deployment decision
+# #   - Generate evidence_id (EV-<UUID>) and SHA256 integrity hash
+# #   - Save forensic evidence package to evidence/<scan_id>/
+# #
+# # STAGE 11 — ARTIFACT UPLOAD & ARCHIVAL
+# #   - Upload reports/static/<scan_id>/ as GitHub Actions Artifact
+# #   - Upload reports/runtime/<scan_id>/ as GitHub Actions Artifact
+# #   - Upload reports/final/<scan_id>/ as GitHub Actions Artifact
+# #   - Upload evidence/<scan_id>/ as GitHub Actions Artifact
+# #   - All artifacts tagged with scan_id for retrieval
+# #
+# # =============================================================================
+# # PLACEHOLDER — Full workflow implementation will follow in future phases
+# # =============================================================================
 
-      # FUTURE STEP: Terraform init and validate (per root module)
-      # - run: terraform init && terraform validate
+# name: IaC Security Framework Pipeline
 
-      # FUTURE STEP: Checkov static scanning (multi-module aware)
-      # - run: checkov -d repositories/cloned/<scan_id>/ -o json > reports/static/<scan_id>/checkov-report.json
+# on:
+#   # FUTURE: Trigger on push containing a repository URL input file
+#   push:
+#     branches:
+#       - main
+#   # Manual trigger with repository URL and branch as inputs
+#   workflow_dispatch:
+#     inputs:
+#       repository_url:
+#         description: 'GitHub repository URL to scan (e.g. https://github.com/org/repo)'
+#         required: true
+#         default: ''
+#       repository_branch:
+#         description: 'Branch to scan (defaults to main)'
+#         required: false
+#         default: 'main'
 
-      # FUTURE STEP: Normalize Checkov findings
-      # - run: python scripts/normalize_checkov.py
+# jobs:
+#   # ==========================================================================
+#   # PLACEHOLDER JOB — Replace with real implementation in future phases
+#   # ==========================================================================
+#   iac-security-pipeline:
+#     name: IaC Forensic Security Pipeline
+#     runs-on: ubuntu-latest
 
-      # FUTURE STEP: OPA/Rego policy validation via Conftest
-      # - run: conftest test --policy policies/ <terraform_plan.json>
+#     steps:
+#       # -----------------------------------------------------------------------
+#       # STEP 1: Checkout this framework repository
+#       # -----------------------------------------------------------------------
+#       - name: Checkout Framework Repository
+#         uses: actions/checkout@v4
 
-      # FUTURE STEP: Initial risk scoring
-      # - run: python scripts/risk_score.py
+#       # -----------------------------------------------------------------------
+#       # STEP 2: Set up Python environment
+#       # FUTURE: Install requirements from requirements.txt
+#       # -----------------------------------------------------------------------
+#       - name: Set up Python
+#         uses: actions/setup-python@v5
+#         with:
+#           python-version: '3.11'
 
-      # FUTURE STEP: Deploy to AWS sandbox
-      # - run: terraform apply -auto-approve
+#       # -----------------------------------------------------------------------
+#       # STEP 3: Set up Terraform CLI
+#       # FUTURE: Use specific Terraform version for reproducibility
+#       # -----------------------------------------------------------------------
+#       - name: Set up Terraform
+#         uses: hashicorp/setup-terraform@v3
+#         with:
+#           terraform_version: '1.7.0'
 
-      # FUTURE STEP: Prowler runtime validation (targeting scan_id-tagged resources)
-      # - run: prowler aws --output-formats json --output-directory reports/runtime/<scan_id>/
+#       # -----------------------------------------------------------------------
+#       # PLACEHOLDER STEPS — Will be expanded in future implementation phases
+#       # -----------------------------------------------------------------------
 
-      # FUTURE STEP: Normalize Prowler findings
-      # - run: python scripts/normalize_prowler.py
+#       # FUTURE STEP: Clone target repository and generate scan_id
+#       # - run: python scripts/clone_repository.py
+#       #     
+#       # FUTURE STEP: Generate scan metadata and file hashes
+#       # - run: python scripts/generate_scan_metadata.py
 
-      # FUTURE STEP: Final runtime risk scoring
-      # - run: python scripts/runtime_risk_score.py
+#       # FUTURE STEP: Recursively discover Terraform root modules
+#       # - run: python scripts/discover_terraform.py
 
-      # FUTURE STEP: Generate forensic evidence package
-      # - run: python scripts/forensic_log.py
+#       # FUTURE STEP: Terraform format check (per root module)
+#       # - run: terraform fmt -check <root_module_path>
 
-      # FUTURE STEP: Upload all artifacts tagged with scan_id
-      # - uses: actions/upload-artifact@v4
+#       # FUTURE STEP: Terraform init and validate (per root module)
+#       # - run: terraform init && terraform validate
 
-      - name: Pipeline Placeholder
-        run: |
-          echo "======================================================"
-          echo "  IaC Security Framework Pipeline — Placeholder"
-          echo "  Repository URL scanning model — dynamic Terraform discovery"
-          echo "  Full implementation to follow in future phases."
-          echo "======================================================"
-          echo "  Target repository: ${{ github.event.inputs.repository_url }}"
-          echo "  Target branch:     ${{ github.event.inputs.repository_branch }}"
-          echo "======================================================"
+#       # FUTURE STEP: Checkov static scanning (multi-module aware)
+#       # - run: checkov -d repositories/cloned/<scan_id>/ -o json > reports/static/<scan_id>/checkov-report.json
+
+#       # FUTURE STEP: Normalize Checkov findings
+#       # - run: python scripts/normalize_checkov.py
+
+#       # FUTURE STEP: OPA/Rego policy validation via Conftest
+#       # - run: conftest test --policy policies/ <terraform_plan.json>
+
+#       # FUTURE STEP: Initial risk scoring
+#       # - run: python scripts/risk_score.py
+
+#       # FUTURE STEP: Deploy to AWS sandbox
+#       # - run: terraform apply -auto-approve
+
+#       # FUTURE STEP: Prowler runtime validation (targeting scan_id-tagged resources)
+#       # - run: prowler aws --output-formats json --output-directory reports/runtime/<scan_id>/
+
+#       # FUTURE STEP: Normalize Prowler findings
+#       # - run: python scripts/normalize_prowler.py
+
+#       # FUTURE STEP: Final runtime risk scoring
+#       # - run: python scripts/runtime_risk_score.py
+
+#       # FUTURE STEP: Generate forensic evidence package
+#       # - run: python scripts/forensic_log.py
+
+#       # FUTURE STEP: Upload all artifacts tagged with scan_id
+#       # - uses: actions/upload-artifact@v4
+
+#       # - name: Pipeline Placeholder
+#       #   run: |
+#       #     echo "======================================================"
+#       #     echo "  IaC Security Framework Pipeline — Placeholder"
+#       #     echo "  Repository URL scanning model — dynamic Terraform discovery"
+#       #     echo "  Full implementation to follow in future phases."
+#       #     echo "======================================================"
+#       #     echo "  Target repository: ${{ github.event.inputs.repository_url }}"
+#       #     echo "  Target branch:     ${{ github.event.inputs.repository_branch }}"
+#       #     echo "======================================================"
