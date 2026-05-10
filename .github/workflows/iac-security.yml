@@ -1,8 +1,10 @@
 # =============================================================================
-# IaC Security Framework — Terraform Validation Pipeline
+# IaC Security Framework — Terraform Validation + Checkov Scanning Pipeline
 #
 # Accepts a GitHub repository URL, clones it, discovers Terraform directories,
-# runs terraform fmt/init/validate, and uploads forensic metadata as artifacts.
+# runs terraform fmt/init/validate, executes Checkov static security scanning,
+# normalizes findings, generates forensic summaries, and uploads all reports
+# as GitHub Actions artifacts.
 #
 # Every step is traceable via SCAN_ID.
 # =============================================================================
@@ -27,7 +29,7 @@ on:
 
 jobs:
   terraform-validation:
-    name: Terraform Validation Pipeline
+    name: Terraform Validation + Checkov Scanning Pipeline
     runs-on: ubuntu-latest
 
     steps:
@@ -78,6 +80,17 @@ jobs:
         with:
           terraform_wrapper: false
 
+      # ---- Install Checkov ----
+      - name: Install Checkov
+        run: |
+          pip install checkov
+          echo "Checkov installed successfully."
+
+      - name: Print Checkov version
+        run: |
+          checkov --version
+          echo "Checkov version confirmed."
+
       # ---- Pipeline stages ----
       - name: "Stage 1: Clone target repository"
         run: python scripts/clone_repository.py
@@ -89,7 +102,67 @@ jobs:
         run: python scripts/discover_terraform.py
 
       - name: "Stage 4: Terraform validation (fmt / init / validate)"
+        id: terraform_validation
+        continue-on-error: true
         run: python scripts/terraform_validate.py
+
+      # ---- Checkov Static Security Scanning ----
+      - name: "Stage 5: Checkov static security scan"
+        id: checkov_scan
+        if: steps.terraform_validation.outcome == 'success'
+        continue-on-error: true
+        run: |
+          echo "========================================"
+          echo "  Checkov Static Security Scan"
+          echo "  SCAN_ID  = $SCAN_ID"
+          echo "  Target   = repositories/cloned/$SCAN_ID"
+          echo "========================================"
+
+          # Create output directory
+          mkdir -p "reports/static/$SCAN_ID"
+
+          # Run Checkov recursively against the cloned repository
+          checkov \
+            -d "repositories/cloned/$SCAN_ID" \
+            -o json \
+            --output-file-path "reports/static/$SCAN_ID" \
+            || true
+
+          # Checkov outputs results_json.json by default when using --output-file-path
+          # Rename to our expected filename if the default output exists
+          if [ -f "reports/static/$SCAN_ID/results_json.json" ]; then
+            mv "reports/static/$SCAN_ID/results_json.json" "reports/static/$SCAN_ID/checkov-report.json"
+            echo "Checkov report saved to reports/static/$SCAN_ID/checkov-report.json"
+          else
+            echo "WARNING: Checkov did not produce expected output file."
+            echo "Checking for any JSON output..."
+            ls -la "reports/static/$SCAN_ID/" || true
+          fi
+
+      - name: "Stage 5a: Checkov scan skipped (validation failed)"
+        if: steps.terraform_validation.outcome != 'success'
+        run: |
+          echo "========================================"
+          echo "  Checkov scan SKIPPED"
+          echo "  Reason: Terraform validation failed"
+          echo "  SCAN_ID = $SCAN_ID"
+          echo "========================================"
+          echo "Terraform validation must pass before Checkov scanning."
+          echo "Validation reports are still uploaded as artifacts."
+
+      # ---- Normalize Checkov Findings ----
+      - name: "Stage 6: Normalize Checkov findings"
+        if: steps.terraform_validation.outcome == 'success'
+        run: |
+          echo "Normalizing Checkov findings for SCAN_ID = $SCAN_ID"
+          python scripts/normalize_checkov.py
+
+      # ---- Generate Forensic Summary ----
+      - name: "Stage 7: Generate Checkov forensic summary"
+        if: steps.terraform_validation.outcome == 'success'
+        run: |
+          echo "Generating forensic summary for SCAN_ID = $SCAN_ID"
+          python scripts/checkov_forensic_summary.py
 
       # ---- Artifacts (always upload, even on failure) ----
       - name: Upload scan metadata artifacts
@@ -99,15 +172,14 @@ jobs:
           name: scan-metadata-${{ steps.scan.outputs.scan_id }}
           path: repositories/metadata/${{ steps.scan.outputs.scan_id }}/
 
-      - name: Upload validation report artifacts
+      - name: Upload validation and Checkov report artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: terraform-validation-${{ steps.scan.outputs.scan_id }}
+          name: static-reports-${{ steps.scan.outputs.scan_id }}
           path: reports/static/${{ steps.scan.outputs.scan_id }}/
 
       # ---- Future stages (not yet implemented) ----
-      # - Checkov static scanning
       # - OPA/Rego policy validation
       # - Risk scoring
       # - AWS sandbox deployment

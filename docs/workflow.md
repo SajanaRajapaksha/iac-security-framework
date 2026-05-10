@@ -18,7 +18,10 @@ The framework accepts **GitHub repository URLs** as input. It never assumes a sp
 | Stage 2 — Scan Metadata (SHA256 hashing) | ✅ Implemented |
 | Stage 3 — Terraform Discovery | ✅ Implemented |
 | Stage 4 — Terraform Validation (fmt/init/validate) | ✅ Implemented |
-| Stages 5–12 | 🔮 Planned |
+| Stage 5 — Checkov Static Security Scanning | ✅ Implemented |
+| Stage 5a — Checkov Finding Normalization | ✅ Implemented |
+| Stage 5b — Checkov Forensic Summary | ✅ Implemented |
+| Stages 6–12 | 🔮 Planned |
 
 ---
 
@@ -143,24 +146,123 @@ The framework accepts **GitHub repository URLs** as input. It never assumes a sp
 
 ---
 
-## Stage 5: Static IaC Scanning (Checkov)
+## Stage 5: Static IaC Scanning (Checkov) ✅
 
-**Trigger:** Automatic — after Terraform validation.
+**Trigger:** Automatic — runs after Terraform validation succeeds. If Terraform validation fails, Checkov is **skipped** but validation reports are still uploaded as artifacts.
 
-**Tool:** Checkov + `scripts/normalize_checkov.py`
+**Tool:** Checkov (installed via `pip install checkov`)
+
+**Script:** `scripts/normalize_checkov.py` (normalization), `scripts/checkov_forensic_summary.py` (forensic summary)
+
+**Environment variables:** `SCAN_ID`, `REPO_URL`
 
 **Actions:**
-1. Run Checkov recursively against `repositories/cloned/<scan_id>/`
-   - Single Checkov run covers all discovered `.tf` files
-2. Export raw JSON to `reports/static/<scan_id>/checkov-report.json`
-3. Run `normalize_checkov.py`:
-   - Parse raw Checkov output
-   - Normalize each finding to framework standard format
-   - Attach `scan_id` and relative file path to every finding
-   - Categorize by severity (CRITICAL / HIGH / MEDIUM / LOW)
-4. Save `reports/static/<scan_id>/normalized-findings.json`
+1. Install Checkov via `pip install checkov` in the GitHub Actions workflow
+2. Print Checkov version to workflow logs for traceability
+3. Run Checkov recursively against `repositories/cloned/<SCAN_ID>/`:
+   ```bash
+   checkov \
+     -d repositories/cloned/$SCAN_ID \
+     -o json \
+     --output-file-path reports/static/$SCAN_ID
+   ```
+4. The step uses `continue-on-error: true` so the pipeline continues even if Checkov finds security issues
+5. Raw Checkov JSON output is saved as `reports/static/<SCAN_ID>/checkov-report.json`
 
-**Evidence produced:** ✅ Normalized static IaC misconfiguration findings with `scan_id`
+**Output:** `reports/static/<SCAN_ID>/checkov-report.json`
+
+**Error handling:** Checkov execution uses `continue-on-error: true`. The workflow proceeds to normalization regardless of Checkov exit code. If Terraform validation failed, Checkov is skipped entirely.
+
+**Evidence produced:** ✅ Raw Checkov static analysis results with check IDs, resources, severities, and file paths
+
+---
+
+## Stage 5a: Checkov Finding Normalization ✅
+
+**Trigger:** Automatic — runs after Checkov scan completes (only if Terraform validation succeeded).
+
+**Script:** `scripts/normalize_checkov.py`
+
+**Environment variable:** `SCAN_ID`
+
+**Actions:**
+1. Load raw Checkov report from `reports/static/<SCAN_ID>/checkov-report.json`
+2. Handle gracefully: missing file, empty file, invalid JSON
+3. Load Terraform file hash map from `repositories/metadata/<SCAN_ID>/scan-metadata.json`
+4. Extract all **failed checks** from the Checkov output
+5. For each failed check, normalize into the framework standard format:
+   - `scan_id` — links to the specific scan
+   - `finding_id` — unique UUID per finding
+   - `check_id` — Checkov check identifier (e.g., `CKV_AWS_21`)
+   - `check_name` — human-readable description
+   - `severity` — CRITICAL, HIGH, MEDIUM, LOW, or UNKNOWN (defaults to UNKNOWN if Checkov omits severity)
+   - `file_path` — path to the affected Terraform file
+   - `resource` — affected Terraform resource
+   - `guideline` — remediation link from Checkov
+   - `category` — inferred from check metadata (encryption, networking, iam, logging, storage, etc.)
+   - `check_result` — Checkov result status
+   - `terraform_file_sha256` — SHA256 hash of the source Terraform file (from scan metadata)
+   - `finding_generated_at` — UTC ISO 8601 timestamp
+6. Generate severity summary with counts for CRITICAL, HIGH, MEDIUM, LOW, UNKNOWN
+7. Save normalized findings
+
+**Output:** `reports/static/<SCAN_ID>/normalized-checkov-findings.json`
+
+```json
+{
+  "scan_id": "SCAN-550e8400",
+  "generated_at": "2025-01-01T12:00:30+00:00",
+  "source_tool": "checkov",
+  "total_failed_checks": 5,
+  "severity_summary": { "CRITICAL": 1, "HIGH": 2, "MEDIUM": 1, "LOW": 0, "UNKNOWN": 1 },
+  "findings": [
+    {
+      "scan_id": "SCAN-550e8400",
+      "finding_id": "uuid-...",
+      "check_id": "CKV_AWS_21",
+      "check_name": "Ensure S3 bucket has versioning enabled",
+      "severity": "HIGH",
+      "file_path": "/main.tf",
+      "resource": "aws_s3_bucket.main",
+      "category": "storage",
+      "terraform_file_sha256": "abc123...",
+      "finding_generated_at": "2025-01-01T12:00:30+00:00"
+    }
+  ]
+}
+```
+
+**Evidence produced:** ✅ Normalized static IaC misconfiguration findings with SCAN_ID and file hash correlation
+
+---
+
+## Stage 5b: Checkov Forensic Summary ✅
+
+**Trigger:** Automatic — runs after finding normalization completes.
+
+**Script:** `scripts/checkov_forensic_summary.py`
+
+**Environment variables:** `SCAN_ID`, `REPO_URL`
+
+**Actions:**
+1. Load normalized findings from `reports/static/<SCAN_ID>/normalized-checkov-findings.json`
+2. Load Terraform validation results from `reports/static/<SCAN_ID>/terraform-validation.json`
+3. Load scan metadata from `repositories/metadata/<SCAN_ID>/scan-metadata.json`
+4. Generate comprehensive forensic summary including:
+   - `scan_id` and `generated_at` timestamp
+   - `repository_url`
+   - `total_terraform_files` and `total_terraform_directories`
+   - `total_checkov_findings` and `severity_summary`
+   - `scanned_directories` with per-directory validation status
+   - `repository_integrity_hash` from scan metadata
+   - `evidence_note` explaining forensic significance
+   - `checkov_execution_metadata` with timing information
+   - `forensic_chain_summary` explaining how SCAN_ID links all evidence, Terraform hashes preserve integrity, findings preserve security evidence, and reports support investigation
+5. Save forensic summary
+
+**Output:** `reports/static/<SCAN_ID>/checkov-forensic-summary.json`
+
+**Evidence produced:** ✅ Comprehensive forensic summary linking all Checkov evidence through SCAN_ID
 
 ---
 
@@ -309,14 +411,16 @@ All artifacts tagged with `scan_id` for retrieval and traceability.
 | Stage | Script / Tool | Output Location | Evidence |
 |---|---|---|---|
 | Repository Cloning | `clone_repository.py` | `repositories/cloned/<scan_id>/` | ✅ |
-| Terraform Discovery | `discover_terraform.py` | `reports/static/<scan_id>/terraform-discovery.json` | ✅ |
-| Scan Metadata | `generate_scan_metadata.py` | `repositories/metadata/scan-<scan_id>.json` | ✅ |
-| Terraform Validation | Terraform CLI | Validation results | ✅ |
-| Static Scanning | Checkov + `normalize_checkov.py` | `reports/static/<scan_id>/` | ✅ |
-| Policy Validation | Conftest + `normalize_checkov.py` | `reports/static/<scan_id>/policy-results.json` | ✅ |
-| Initial Risk Score | `risk_score.py` | `reports/static/<scan_id>/static-risk-score.json` | ✅ |
-| Sandbox Deployment | Terraform + AWS | Deployment metadata | ✅ |
-| Runtime Validation | Prowler + `normalize_prowler.py` | `reports/runtime/<scan_id>/` | ✅ |
-| Final Risk Score | `runtime_risk_score.py` | `reports/final/<scan_id>/` | ✅ |
-| Evidence Generation | `forensic_log.py` | `evidence/<scan_id>/` | ✅ |
+| Scan Metadata | `generate_scan_metadata.py` | `repositories/metadata/<scan_id>/scan-metadata.json` | ✅ |
+| Terraform Discovery | `discover_terraform.py` | `repositories/metadata/<scan_id>/terraform-directories.json` | ✅ |
+| Terraform Validation | `terraform_validate.py` | `reports/static/<scan_id>/terraform-validation.json` | ✅ |
+| Checkov Scanning | Checkov CLI | `reports/static/<scan_id>/checkov-report.json` | ✅ |
+| Checkov Normalization | `normalize_checkov.py` | `reports/static/<scan_id>/normalized-checkov-findings.json` | ✅ |
+| Checkov Forensic Summary | `checkov_forensic_summary.py` | `reports/static/<scan_id>/checkov-forensic-summary.json` | ✅ |
+| Policy Validation | Conftest + OPA/Rego | `reports/static/<scan_id>/policy-results.json` | 🔮 |
+| Initial Risk Score | `risk_score.py` | `reports/static/<scan_id>/static-risk-score.json` | 🔮 |
+| Sandbox Deployment | Terraform + AWS | Deployment metadata | 🔮 |
+| Runtime Validation | Prowler + `normalize_prowler.py` | `reports/runtime/<scan_id>/` | 🔮 |
+| Final Risk Score | `runtime_risk_score.py` | `reports/final/<scan_id>/` | 🔮 |
+| Evidence Generation | `forensic_log.py` | `evidence/<scan_id>/` | 🔮 |
 | Artifact Upload | GitHub Actions | Archived per `scan_id` | ✅ |

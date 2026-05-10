@@ -81,18 +81,28 @@ def main():
 
     tf_files = find_tf_files(clone_dir)
 
+    # Compute a single repository integrity hash from all individual file hashes.
+    # Sorting ensures deterministic output regardless of filesystem walk order.
+    sorted_hashes = sorted(f["sha256"] for f in tf_files)
+    combined = "".join(sorted_hashes)
+    repo_integrity_hash = hashlib.sha256(combined.encode("utf-8")).hexdigest() if sorted_hashes else ""
+
     metadata = {
         "scan_id": scan_id,
         "repo_url": repo_url,
         "branch": branch,
         "generated_at": utcnow_iso(),
         "total_terraform_files": len(tf_files),
+        "repository_integrity_hash": repo_integrity_hash,
         "terraform_files": tf_files,
         "evidence_note": (
             "All Terraform files listed above are treated as digital evidence objects. "
             "SHA256 hashes were computed at the time of scan to preserve file integrity. "
             "Any modification after this point will produce a different hash, enabling "
-            "tamper detection during forensic investigation."
+            "tamper detection during forensic investigation. "
+            "The repository_integrity_hash is a composite SHA256 derived from the sorted "
+            "concatenation of all individual file hashes, providing a single fingerprint "
+            "for the entire Terraform codebase at scan time."
         ),
     }
 

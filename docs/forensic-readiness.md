@@ -57,10 +57,12 @@ Forensic readiness requires that **no stage of the pipeline is invisible**. Each
 | Stage | Metadata Produced | Status |
 |---|---|---|
 | Repository Cloning | scan_id, repo_url, branch, clone timestamps, stdout/stderr | ✅ Implemented |
-| Scan Metadata | SHA256 file hashes, file sizes, file paths, evidence note | ✅ Implemented |
+| Scan Metadata | SHA256 file hashes, file sizes, file paths, repository_integrity_hash, evidence note | ✅ Implemented |
 | Terraform Discovery | directory paths, .tf file counts per directory | ✅ Implemented |
 | Terraform Validation | command, exit code, stdout, stderr, started_at, completed_at per fmt/init/validate | ✅ Implemented |
-| Checkov Scanning | Finding details, check IDs, resource names, severity | 🔮 Planned |
+| Checkov Scanning | Raw JSON report with check IDs, resources, severities, file paths | ✅ Implemented |
+| Checkov Normalization | Normalized findings with severity summary, file hash correlation, categories | ✅ Implemented |
+| Checkov Forensic Summary | Comprehensive forensic summary linking all Checkov evidence via SCAN_ID | ✅ Implemented |
 | Policy Validation | Violated rules, rule descriptions, affected resources | 🔮 Planned |
 | Initial Risk Score | Score calculation, risk band, decision | 🔮 Planned |
 | Sandbox Deployment | Resource ARNs, deployed state, deployment time | 🔮 Planned |
@@ -75,6 +77,8 @@ Together, these records form a **complete audit trail** for every scan.
 Cryptographic hashing is the foundation of digital evidence integrity. This framework uses **SHA256** hashing at multiple points:
 
 - **File Hashing (Clone Time):** Every `.tf` file is hashed immediately after cloning via `generate_scan_metadata.py`. If any file is modified after cloning, the hash will not match, revealing tampering. This is implemented and operational.
+- **Repository Integrity Hash:** A composite SHA256 hash is computed from the sorted concatenation of all individual file hashes. This provides a single fingerprint for the entire Terraform codebase at scan time, enabling whole-repository tamper detection.
+- **Finding-File Hash Correlation:** Each normalized Checkov finding includes the SHA256 hash of its source Terraform file. This links security findings directly to the exact file content that produced them, preserving evidence integrity.
 - **Evidence Package Hashing (future):** The complete forensic evidence package will be hashed on creation. Any post-generation modification to the evidence file will produce a different hash.
 
 SHA256 is a one-way, collision-resistant cryptographic function widely accepted in digital forensics for demonstrating file integrity.
@@ -93,13 +97,22 @@ Clone Metadata (timestamp, stdout/stderr)   ← ✅ Implemented
 SHA256 File Hashes (.tf files)               ← ✅ Implemented
   │ (SCAN_ID)
   ▼
+Repository Integrity Hash                    ← ✅ Implemented
+  │ (SCAN_ID)
+  ▼
 Terraform Directory Discovery                ← ✅ Implemented
   │ (SCAN_ID)
   ▼
 Terraform Validation (fmt/init/validate)     ← ✅ Implemented
   │ (SCAN_ID)
   ▼
-Checkov Findings                             ← 🔮 Planned
+Checkov Static Security Scan                 ← ✅ Implemented
+  │ (SCAN_ID)
+  ▼
+Normalized Checkov Findings (hash-linked)    ← ✅ Implemented
+  │ (SCAN_ID)
+  ▼
+Checkov Forensic Summary                     ← ✅ Implemented
   │ (SCAN_ID)
   ▼
 OPA Policy Violations                        ← 🔮 Planned
@@ -150,11 +163,68 @@ The framework is designed to answer the following investigative questions:
 |---|---|
 | What repository was scanned? | `repository-metadata.json` → `repo_url`, `branch` |
 | What was the exact content at scan time? | `scan-metadata.json` → `terraform_files[].sha256` |
+| What is the overall codebase fingerprint? | `scan-metadata.json` → `repository_integrity_hash` |
 | What Terraform directories were found? | `terraform-directories.json` |
 | Did the Terraform code pass validation? | `terraform-validation.json` → `overall_status` |
 | What specific validation errors occurred? | `terraform-validation.json` → `directories[].validate.stderr` |
-| What security issues were detected? | `normalized-findings.json`, `policy-results.json` (planned) |
+| What security misconfigurations were detected? | `normalized-checkov-findings.json` → `findings[]` |
+| How many critical issues exist? | `normalized-checkov-findings.json` → `severity_summary` |
+| Which Terraform file caused a finding? | `normalized-checkov-findings.json` → `findings[].file_path` + `terraform_file_sha256` |
+| Was the scanned file modified after scanning? | Compare `terraform_file_sha256` in findings with current file hash |
+| What is the overall forensic chain? | `checkov-forensic-summary.json` → `forensic_chain_summary` |
+| What policy violations were found? | `policy-results.json` (planned) |
 | Has the evidence been tampered with? | `evidence_hash` in `evidence-<id>.json` (planned) |
+
+---
+
+## 3. Checkov Findings as Forensic Evidence
+
+### 3.1 Findings Become Digital Evidence Objects
+
+Every Checkov security finding is treated as a digital evidence object within the forensic framework. When Checkov detects a misconfiguration (e.g., an unencrypted S3 bucket or an open security group), the raw finding is:
+
+1. **Extracted** from the Checkov JSON report
+2. **Normalized** into a structured format with a unique `finding_id` (UUID)
+3. **Correlated** with the SHA256 hash of the source Terraform file
+4. **Tagged** with the `SCAN_ID` that links it to all other pipeline evidence
+5. **Timestamped** with a UTC ISO 8601 `finding_generated_at` timestamp
+
+This process mirrors the forensic principle that every piece of evidence must be individually identifiable, traceable to its source, and timestamped.
+
+### 3.2 Terraform File Hashes Preserve Finding Integrity
+
+Each normalized finding includes a `terraform_file_sha256` field containing the SHA256 hash of the Terraform file that triggered the finding. This hash was computed at clone time (before any processing). This means:
+
+- A finding can be traced back to the **exact file content** that caused it
+- If the file is modified after scanning, the hash mismatch will reveal tampering
+- Investigators can verify that the finding was produced from unaltered source code
+
+### 3.3 Normalized Findings Support Investigation
+
+The normalization process transforms raw Checkov output into a structured, queryable format that supports forensic investigation:
+
+- **Severity classification** enables prioritization of findings by impact
+- **Category inference** groups findings by security domain (encryption, networking, IAM, etc.)
+- **Resource identification** pinpoints exactly which Terraform resource is misconfigured
+- **Guideline references** link to remediation documentation
+
+### 3.4 SCAN_ID Links All Evidence
+
+The `SCAN_ID` is the primary key that links:
+- **Validation evidence** → `terraform-validation.json`
+- **Security findings** → `normalized-checkov-findings.json`
+- **File integrity** → `scan-metadata.json` (with `repository_integrity_hash`)
+- **Forensic summary** → `checkov-forensic-summary.json`
+
+A forensic investigator can start from any of these artifacts and use the `SCAN_ID` to reconstruct the complete scan context.
+
+### 3.5 Repository Integrity Hash
+
+The `repository_integrity_hash` in `scan-metadata.json` is a composite SHA256 hash derived from the sorted concatenation of all individual Terraform file hashes. This provides:
+
+- A **single fingerprint** for the entire scanned codebase at scan time
+- **Whole-repository tamper detection** — if any file is modified, the integrity hash changes
+- **Cross-report verification** — the same integrity hash appears in the Checkov forensic summary, enabling cross-referencing between reports
 
 ---
 

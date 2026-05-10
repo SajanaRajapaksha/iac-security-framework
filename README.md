@@ -231,11 +231,57 @@ The Terraform validation module is the first fully implemented pipeline stage. I
 
 3. **Repository cloning** (`clone_repository.py`): Clones the target repo into `repositories/cloned/<SCAN_ID>/` and writes `repository-metadata.json` with clone status, timestamps, stdout/stderr.
 
-4. **Terraform file hashing** (`generate_scan_metadata.py`): Walks the cloned directory, finds all `.tf` files (skipping `.git/`, `.terraform/`, `node_modules/`), computes SHA256 hashes, and writes `scan-metadata.json`.
+4. **Terraform file hashing** (`generate_scan_metadata.py`): Walks the cloned directory, finds all `.tf` files (skipping `.git/`, `.terraform/`, `node_modules/`), computes SHA256 hashes, computes a composite `repository_integrity_hash`, and writes `scan-metadata.json`.
 
 5. **Terraform directory discovery** (`discover_terraform.py`): Identifies all directories containing `.tf` files and writes `terraform-directories.json`.
 
 6. **Terraform validation** (`terraform_validate.py`): For each discovered directory, runs `terraform fmt -check -recursive`, `terraform init -backend=false`, and `terraform validate`. Captures command output, exit codes, and timestamps. Writes `terraform-validation.json` to `reports/static/<SCAN_ID>/`.
+
+---
+
+## Checkov Static Security Scanning (Implemented ✅)
+
+The Checkov module provides automated static security analysis of all Terraform files in the scanned repository. It runs **after** Terraform validation succeeds and produces forensic-ready security findings.
+
+### What Checkov Does
+
+- **Recursive Terraform scanning**: Checkov scans the entire cloned repository (`repositories/cloned/<SCAN_ID>/`) recursively, covering all Terraform directories and modules in a single pass.
+- **AWS IaC misconfiguration detection**: Checkov evaluates 1,000+ built-in security and compliance checks targeting AWS resources — including S3 encryption, security group rules, IAM policies, CloudTrail logging, VPC configurations, and more.
+- **JSON output**: Raw scan results are exported as structured JSON for downstream processing.
+
+### How It Works
+
+1. **Checkov installation**: Installed via `pip install checkov` in the GitHub Actions workflow.
+2. **Conditional execution**: Checkov runs **only after Terraform validation succeeds**. If validation fails, Checkov is skipped but validation reports are still uploaded.
+3. **Recursive scanning**: Checkov scans `repositories/cloned/<SCAN_ID>/` recursively, covering all `.tf` files.
+4. **Raw report generation**: The raw Checkov JSON output is saved to `reports/static/<SCAN_ID>/checkov-report.json`.
+5. **Finding normalization** (`normalize_checkov.py`): Failed checks are extracted, normalized into a structured format, and correlated with Terraform file SHA256 hashes.
+6. **Forensic summary** (`checkov_forensic_summary.py`): A comprehensive forensic summary links all Checkov evidence through the SCAN_ID.
+
+### Normalized Findings Format
+
+Each normalized finding includes:
+
+| Field | Description |
+|---|---|
+| `scan_id` | Links the finding to the specific scan |
+| `finding_id` | Unique UUID for the finding |
+| `check_id` | Checkov check identifier (e.g., `CKV_AWS_21`) |
+| `check_name` | Human-readable check description |
+| `severity` | CRITICAL, HIGH, MEDIUM, LOW, or UNKNOWN |
+| `file_path` | Path to the affected Terraform file |
+| `resource` | Terraform resource name |
+| `category` | Inferred category (encryption, networking, iam, etc.) |
+| `terraform_file_sha256` | SHA256 hash of the source Terraform file |
+| `finding_generated_at` | UTC timestamp of finding generation |
+
+### SCAN_ID Linkage
+
+Every Checkov output is tagged with the same `SCAN_ID` used across the entire pipeline. This enables full traceability from repository cloning → file hashing → Terraform validation → Checkov scanning → forensic summary.
+
+### Terraform File Hashing
+
+Normalized findings are correlated with Terraform file hashes from `scan-metadata.json`. Each finding includes the `terraform_file_sha256` of its source file, enabling tamper detection and evidence integrity verification.
 
 ### Generated Reports
 
@@ -245,8 +291,11 @@ The Terraform validation module is the first fully implemented pipeline stage. I
 | `scan-metadata.json` | `repositories/metadata/<SCAN_ID>/` |
 | `terraform-directories.json` | `repositories/metadata/<SCAN_ID>/` |
 | `terraform-validation.json` | `reports/static/<SCAN_ID>/` |
+| `checkov-report.json` | `reports/static/<SCAN_ID>/` |
+| `normalized-checkov-findings.json` | `reports/static/<SCAN_ID>/` |
+| `checkov-forensic-summary.json` | `reports/static/<SCAN_ID>/` |
 
-All reports are uploaded as GitHub Actions Artifacts (even if validation fails) and tagged with SCAN_ID.
+All reports are uploaded as GitHub Actions Artifacts (even if Checkov finds issues) and tagged with SCAN_ID.
 
 ### Running the Workflow
 
@@ -277,10 +326,11 @@ iac-security-framework/
 │
 ├── scripts/
 │   ├── clone_repository.py         # Clone repo → repositories/cloned/<scan_id>/
-│   ├── generate_scan_metadata.py   # SHA256 hashing + scan metadata
+│   ├── generate_scan_metadata.py   # SHA256 hashing + scan metadata + integrity hash
 │   ├── discover_terraform.py       # Recursive .tf directory discovery
 │   ├── terraform_validate.py       # terraform fmt / init / validate per directory
-│   ├── normalize_checkov.py        # Checkov output normalization (placeholder)
+│   ├── normalize_checkov.py        # Checkov output normalization ✅
+│   ├── checkov_forensic_summary.py # Checkov forensic summary generation ✅
 │   ├── normalize_prowler.py        # Prowler output normalization (placeholder)
 │   ├── risk_score.py               # Static risk scoring (placeholder)
 │   ├── runtime_risk_score.py       # Final risk scoring (placeholder)
@@ -320,36 +370,44 @@ iac-security-framework/
 - Placeholder files with detailed comments
 - Documentation foundation
 
-### Phase 2 (Current) — Terraform Validation Module ✅
+### Phase 2 — Terraform Validation Module ✅
 - `clone_repository.py` — Repository cloning with scan_id isolation
-- `generate_scan_metadata.py` — Scan metadata with SHA256 hashing
+- `generate_scan_metadata.py` — Scan metadata with SHA256 hashing + repository integrity hash
 - `discover_terraform.py` — Recursive Terraform directory discovery
 - `terraform_validate.py` — terraform fmt/init/validate per directory
 - GitHub Actions workflow — end-to-end pipeline with artifact upload
 
-### Phase 3 — Security Scanning
-- `normalize_checkov.py` — Checkov output normalization
+### Phase 3 (Current) — Checkov Static Security Scanning ✅
+- Checkov installation and version output in GitHub Actions
+- Recursive Checkov scanning of cloned repositories
+- Raw JSON report generation (`checkov-report.json`)
+- `normalize_checkov.py` — Forensic-ready finding normalization with file hash correlation
+- `checkov_forensic_summary.py` — Comprehensive forensic summary generation
+- Conditional execution (runs only after Terraform validation succeeds)
+- Artifact upload with SCAN_ID tagging
+
+### Phase 4 — Further Security Scanning
 - `normalize_prowler.py` — Prowler output normalization
 - `risk_score.py` — Static risk scoring engine
 - `runtime_risk_score.py` — Final combined risk scoring
 - `forensic_log.py` — Forensic evidence package generation
 
-### Phase 4 — Policy Implementation
+### Phase 5 — Policy Implementation
 - `terraform.rego` — Terraform governance policies
 - `aws-security.rego` — AWS security policies
 
-### Phase 5 — AWS Sandbox Integration
+### Phase 6 — AWS Sandbox Integration
 - Sandbox AWS account configuration
 - Terraform deployment automation
 - Prowler runtime validation integration
 
-### Phase 6 — Frontend Dashboard *(Future)*
+### Phase 7 — Frontend Dashboard *(Future)*
 - Repository URL submission form
 - Pipeline status and stage visualization
 - Risk score trends and scan history
 - Evidence package viewer
 
-### Phase 7 — Backend API *(Future)*
+### Phase 8 — Backend API *(Future)*
 - Scan submission API
 - Report retrieval API
 - Evidence package API

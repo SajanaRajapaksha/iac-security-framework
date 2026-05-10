@@ -84,31 +84,69 @@ Terraform CLI is the execution engine for all Terraform operations. It is the au
 
 ---
 
-## 5. Checkov
+## 5. Checkov ✅
 
 ### Why Selected
 Checkov is the most comprehensive open-source static analysis tool for IaC security. It covers 1,000+ built-in checks across Terraform, CloudFormation, Kubernetes, and more. It natively outputs JSON reports, making automated integration straightforward. Checkov is actively maintained by Bridgecrew (Prisma Cloud) and is widely adopted in production DevSecOps pipelines.
 
-### Role in This Project
-- **Primary static scanning engine**: Scans all uploaded Terraform templates
-- **Finding source**: Produces the raw data for static risk scoring
-- **Forensic input**: Normalized Checkov findings are included in the evidence package
-- **Test validation**: The `insecure-aws` templates should trigger known Checkov rules
+Checkov was selected for this framework because:
 
-**Key Checkov checks targeted:**
-- `CKV_AWS_18` — CloudTrail log validation enabled
-- `CKV_AWS_19` — S3 bucket encryption enabled
-- `CKV_AWS_21` — S3 bucket versioning enabled
-- `CKV_AWS_54` — S3 bucket public access block
-- `CKV_AWS_25` — Security group no open ingress on SSH
-- `CKV_AWS_9` — CloudTrail multi-region enabled
+1. **Breadth of coverage**: 1,000+ built-in checks covering encryption, networking, IAM, logging, storage, compute, and database security — far more than any single custom policy set could achieve.
+2. **Terraform-native**: Checkov understands Terraform HCL syntax natively and can parse resources, variables, and module references without requiring `terraform plan` output.
+3. **JSON output**: Structured JSON output enables automated parsing, normalization, and integration with the forensic evidence pipeline.
+4. **Severity classification**: Checkov assigns severity levels to findings, enabling risk-based prioritization.
+5. **Active maintenance**: Regularly updated with new checks as AWS services and security best practices evolve.
+6. **No external dependencies at runtime**: Runs as a standalone CLI tool installed via `pip`.
 
-**Command:**
+### Role in Static AWS Terraform Scanning
+Checkov serves as the **primary static security scanning engine** in the framework's pipeline. It operates at Stage 5, after Terraform validation has confirmed the code is syntactically valid:
+
+- **Recursive scanning**: Scans the entire cloned repository (`repositories/cloned/<SCAN_ID>/`) recursively, covering all Terraform directories and modules in a single pass.
+- **AWS resource analysis**: Evaluates AWS resource configurations against security best practices, compliance standards, and known misconfigurations.
+- **Finding production**: Generates the raw data that feeds into finding normalization, severity analysis, and eventually risk scoring.
+- **Forensic input**: Normalized Checkov findings are included in the forensic evidence chain, correlated with Terraform file SHA256 hashes.
+
+### Security and Compliance Checks
+Checkov evaluates Terraform configurations against a comprehensive set of security and compliance checks:
+
+| Category | Example Checks |
+|---|---|
+| **Encryption** | S3 bucket encryption (CKV_AWS_19), RDS encryption, EBS encryption |
+| **Networking** | Security group open ingress (CKV_AWS_25), VPC flow logs, public IP exposure |
+| **IAM** | Least privilege policies, MFA enforcement, password policy, access key rotation |
+| **Logging** | CloudTrail enabled (CKV_AWS_18), CloudTrail multi-region (CKV_AWS_9), S3 access logging |
+| **Storage** | S3 versioning (CKV_AWS_21), S3 public access block (CKV_AWS_54), backup policies |
+| **Compute** | EC2 instance metadata service v2, AMI encryption, launch configuration security |
+| **Database** | RDS public access, RDS backup retention, DynamoDB encryption |
+
+### JSON Reporting Capabilities
+Checkov's JSON output provides structured, machine-readable reports containing:
+
+- **Passed checks**: Resources that meet security requirements
+- **Failed checks**: Resources with security misconfigurations (the primary data source for this framework)
+- **Check metadata**: Check ID, name, severity, guideline URL, resource name, file path
+- **Framework information**: Which scanning framework (Terraform, CloudFormation, etc.) produced each result
+
+### Forensic Readiness Benefits
+Checkov's integration into the forensic pipeline provides several key benefits:
+
+1. **Timestamped evidence**: Every Checkov scan produces timestamped results that document the security posture at scan time.
+2. **Finding-file correlation**: Normalized findings are linked to Terraform file SHA256 hashes, preserving the relationship between the finding and its source evidence.
+3. **SCAN_ID traceability**: All Checkov outputs are tagged with the SCAN_ID, enabling end-to-end tracing from finding to scan to repository.
+4. **Severity-based prioritization**: Findings are classified by severity for forensic triage.
+5. **Category inference**: Findings are categorized by security domain for structured investigation.
+
+**Command (as used in the pipeline):**
 ```bash
-checkov -d <terraform_directory> \
-        --output json \
-        --output-file-path reports/static/
+checkov \
+  -d repositories/cloned/$SCAN_ID \
+  -o json \
+  --output-file-path reports/static/$SCAN_ID
 ```
+
+**Pipeline scripts:**
+- `scripts/normalize_checkov.py` — Normalizes raw findings with SHA256 correlation
+- `scripts/checkov_forensic_summary.py` — Generates forensic summary linking all Checkov evidence
 
 ---
 
