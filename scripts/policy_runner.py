@@ -315,13 +315,31 @@ def extract_violations(structured_results: list, is_source_mode: bool) -> list[d
                 msg_text = raw_msg
                 metadata = None
 
+                # Some Conftest versions expose metadata directly on the failure.
+                meta_on_failure = failure.get("metadata", {})
+                if isinstance(meta_on_failure, dict) and meta_on_failure:
+                    metadata = meta_on_failure
+
                 if isinstance(raw_msg, dict):
                     msg_text = raw_msg.get("msg", raw_msg.get("message", "No message provided"))
                     meta_candidate = raw_msg.get("metadata", {})
                     if isinstance(meta_candidate, dict) and meta_candidate:
                         metadata = meta_candidate
                 elif isinstance(raw_msg, str):
+                    # If the policy returned an object, Conftest may stringify it.
+                    # Try to parse JSON to recover embedded metadata.
                     msg_text = raw_msg
+                    s = raw_msg.strip()
+                    if s.startswith("{") and s.endswith("}"):
+                        try:
+                            parsed_msg = json.loads(s)
+                        except Exception:
+                            parsed_msg = None
+                        if isinstance(parsed_msg, dict):
+                            msg_text = parsed_msg.get("msg", parsed_msg.get("message", msg_text))
+                            meta_candidate = parsed_msg.get("metadata", {})
+                            if isinstance(meta_candidate, dict) and meta_candidate:
+                                metadata = meta_candidate
                 else:
                     msg_text = str(raw_msg)
 
