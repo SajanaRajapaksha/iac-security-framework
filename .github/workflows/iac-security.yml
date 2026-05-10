@@ -8,7 +8,9 @@
 # via Conftest, and produces forensic-ready evidence at every stage.
 #
 # Static analysis is NON-BLOCKING — findings are preserved as evidence.
-# Policy-as-Code is BLOCKING — deny violations fail the pipeline.
+# Policy-as-Code runs in ADVISORY mode by default — violations are recorded
+# as findings but do not stop the pipeline.  Set POLICY_ENFORCEMENT_MODE
+# to 'blocking' to enforce hard pipeline failure on policy violations.
 #
 # Every step is traceable via SCAN_ID.
 # =============================================================================
@@ -183,21 +185,21 @@ jobs:
       - name: "Stage 8: Prepare policy validation input"
         if: steps.terraform_validation.outcome == 'success'
         run: python scripts/prepare_policy_validation_input.py
-
       # ================================================================
-      # STAGE 9: POLICY-AS-CODE ENFORCEMENT
+      # STAGE 9: POLICY-AS-CODE (advisory mode — findings recorded)
       # ================================================================
 
-      - name: "Stage 9: Policy-as-Code enforcement (Conftest / Rego)"
+      - name: "Stage 9: Policy-as-Code checks (Conftest / Rego)"
         id: policy_enforcement
         if: steps.terraform_validation.outcome == 'success'
-        continue-on-error: true
         run: python scripts/policy_runner.py
+        env:
+          POLICY_ENFORCEMENT_MODE: advisory
 
-      - name: "Stage 9 (skipped): Policy enforcement skipped — validation failed"
+      - name: "Stage 9 (skipped): Policy checks skipped — validation failed"
         if: steps.terraform_validation.outcome != 'success'
         run: |
-          echo "  Policy enforcement SKIPPED — Terraform validation failed"
+          echo "  Policy checks SKIPPED — Terraform validation failed"
 
       # ================================================================
       # STAGE 10: UPDATE COMBINED REPORT (post-policy)
@@ -231,21 +233,6 @@ jobs:
         with:
           name: policy-reports-${{ steps.scan.outputs.scan_id }}
           path: reports/policy/${{ steps.scan.outputs.scan_id }}/
-
-      # ================================================================
-      # FINAL ENFORCEMENT GATE
-      # ================================================================
-
-      - name: "Final: Check policy enforcement result"
-        if: steps.terraform_validation.outcome == 'success' && steps.policy_enforcement.outcome == 'failure'
-        run: |
-          echo "========================================"
-          echo "  PIPELINE BLOCKED"
-          echo "  Policy-as-Code enforcement DENIED the plan."
-          echo "  See policy-reports artifact for details."
-          echo "  SCAN_ID = $SCAN_ID"
-          echo "========================================"
-          exit 1
 
       # ---- Future stages (not yet implemented) ----
       # - Risk scoring

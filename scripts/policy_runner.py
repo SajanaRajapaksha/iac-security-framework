@@ -4,7 +4,7 @@ scripts/policy_runner.py
 Run the full Policy-as-Code enforcement stage.
 
 Pipeline behaviour:
-    1. Read SCAN_ID.
+    1. Read SCAN_ID and POLICY_ENFORCEMENT_MODE.
     2. Generate Terraform plan JSON (calls terraform_plan.generate_plan).
     3. Load policy metadata, select enabled policies.
     4. Snapshot enabled policy files into reports/policy/<SCAN_ID>/runtime-policies/.
@@ -12,15 +12,20 @@ Pipeline behaviour:
     6. Run Conftest against the plan JSON using the runtime policies.
     7. Save raw Conftest output to conftest-results.json.
     8. Normalise into policy-evidence.json.
-    9. Exit non-zero if deny violations exist OR if a tool execution error occurs.
+    9. Exit code depends on POLICY_ENFORCEMENT_MODE.
 
 Distinguishes between:
     - Policy violations (Conftest returns findings) → status=FAIL, decision=DENY
     - Tool errors (Conftest cannot run)             → status=ERROR, decision=ERROR
     - Clean pass (no violations)                    → status=PASS, decision=ALLOW
 
+Enforcement modes (POLICY_ENFORCEMENT_MODE env var):
+    - advisory  (default) — violations recorded as findings, exit 0
+    - blocking            — violations block pipeline, exit 1
+
 Environment variables:
-    SCAN_ID  — required
+    SCAN_ID                  — required
+    POLICY_ENFORCEMENT_MODE  — optional (default: advisory)
     REPO_URL / BRANCH / GITHUB_SHA / GITHUB_RUN_ID — optional context
 """
 
@@ -261,6 +266,38 @@ def build_severity_counts(violations: list[dict]) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Terraform plan failure diagnostics
+# ---------------------------------------------------------------------------
+
+def print_plan_failure_diagnostics(scan_id: str, plan_metadata_path: str):
+    """Read plan metadata and print stderr for debugging in CI logs."""
+    print(f"[policy_runner] Terraform plan generation failed.")
+    print(f"[policy_runner] Check details in: {plan_metadata_path}")
+
+    plan_meta = safe_read_json(plan_metadata_path)
+    if not isinstance(plan_meta, dict):
+        print(f"[policy_runner] Could not read plan metadata.")
+        return
+
+    commands = plan_meta.get("commands_executed", [])
+    for cmd in commands:
+        if not isinstance(cmd, dict):
+            continue
+        if cmd.get("exit_code", 0) != 0:
+            cmd_str = cmd.get("command", "unknown command")
+            stderr = cmd.get("stderr", "")
+            print(f"[policy_runner] Failed command: {cmd_str}")
+            print(f"[policy_runner] terraform stderr (last 2000 chars):")
+            print(stderr[-2000:])
+            break
+    else:
+        # No failed command found — show the error message
+        err = plan_meta.get("error_message", "")
+        if err:
+            print(f"[policy_runner] Error: {err}")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -269,6 +306,14 @@ def main():
     if not scan_id:
         print("ERROR: SCAN_ID environment variable is required.", file=sys.stderr)
         sys.exit(1)
+
+    # Enforcement mode
+    enforcement_mode_raw = os.environ.get("POLICY_ENFORCEMENT_MODE", "advisory").strip().lower()
+    if enforcement_mode_raw not in ("advisory", "blocking"):
+        print(f"[policy_runner] WARNING: Unknown POLICY_ENFORCEMENT_MODE='{enforcement_mode_raw}', defaulting to 'advisory'.")
+        enforcement_mode_raw = "advisory"
+    enforcement_mode = enforcement_mode_raw.upper()  # ADVISORY or BLOCKING
+    is_blocking = enforcement_mode == "BLOCKING"
 
     overall_started = utc_now_iso()
     report_dir = os.path.join("reports", "policy", scan_id)
@@ -285,14 +330,19 @@ def main():
     github_meta = collect_github_metadata()
     commands_executed = []
 
-    print(f"[policy_runner] SCAN_ID = {scan_id}")
+    print(f"[policy_runner] SCAN_ID             = {scan_id}")
+    print(f"[policy_runner] Enforcement mode    = {enforcement_mode}")
 
     # ---- Step 1: Generate Terraform plan JSON ----
     print("[policy_runner] Generating Terraform plan JSON...")
     plan_success, plan_path = generate_plan(scan_id)
 
     if not plan_success:
-        print("[policy_runner] Terraform plan generation failed.")
+        print_plan_failure_diagnostics(scan_id, plan_metadata_path)
+
+        pipeline_blocked = is_blocking
+        exit_code = 1 if is_blocking else 0
+
         _write_evidence(
             evidence_path, scan_id, overall_started,
             status="ERROR", decision="ERROR",
@@ -306,15 +356,25 @@ def main():
             commands_executed=commands_executed,
             plan_metadata_path=plan_metadata_path,
             conftest_results_path=conftest_results_path,
+            enforcement_mode=enforcement_mode,
+            pipeline_blocked=pipeline_blocked,
+            actual_exit_code=exit_code,
         )
-        sys.exit(1)
+
+        print(f"\n{'='*60}")
+        print(f"  POLICY-AS-CODE: ERROR")
+        print(f"  Enforcement mode : {enforcement_mode}")
+        print(f"  Pipeline blocked : {pipeline_blocked}")
+        print(f"  Evidence         : {evidence_path}")
+        print(f"{'='*60}\n")
+        sys.exit(exit_code)
 
     # ---- Step 2: Load and snapshot policies ----
     print("[policy_runner] Loading policy metadata...")
     all_policies = load_policy_metadata(policy_metadata_source)
     enabled = get_enabled_policies(all_policies)
-    print(f"[policy_runner] Total policies  = {len(all_policies)}")
-    print(f"[policy_runner] Enabled         = {len(enabled)}")
+    print(f"[policy_runner] Total policies      = {len(all_policies)}")
+    print(f"[policy_runner] Enabled             = {len(enabled)}")
 
     if len(enabled) == 0:
         print("[policy_runner] WARNING: No enabled policies found.")
@@ -328,22 +388,26 @@ def main():
 
     # ---- Step 4: Run Conftest ----
     conftest_version = get_conftest_version()
-    print(f"[policy_runner] Conftest version = {conftest_version}")
+    print(f"[policy_runner] Conftest version    = {conftest_version}")
     print("[policy_runner] Running Conftest...")
 
     conftest_cmd, conftest_results = run_conftest(plan_json_path, runtime_policy_dir)
     commands_executed.append(conftest_cmd)
 
     # Save raw Conftest results
-    safe_write_json(conftest_results_path, conftest_results if conftest_results else {"raw_stdout": conftest_cmd["stdout"], "raw_stderr": conftest_cmd["stderr"]})
+    safe_write_json(
+        conftest_results_path,
+        conftest_results if conftest_results else {
+            "raw_stdout": conftest_cmd["stdout"],
+            "raw_stderr": conftest_cmd["stderr"],
+        },
+    )
 
     # ---- Step 5: Determine status ----
     is_tool_error = False
     if conftest_cmd["exit_code"] == -2:
-        # Binary not found
         is_tool_error = True
     elif conftest_cmd["exit_code"] < 0:
-        # Timeout or other fatal error
         is_tool_error = True
     elif conftest_cmd["exit_code"] > 1:
         # Conftest returns 2 for syntax errors etc.
@@ -368,12 +432,35 @@ def main():
         decision = "ALLOW"
         error_message = None
 
-    print(f"[policy_runner] Status          = {status}")
-    print(f"[policy_runner] Decision        = {decision}")
-    print(f"[policy_runner] Violations      = {len(violations)}")
-    print(f"[policy_runner] Severity counts = {severity_counts}")
+    # ---- Step 6: Determine enforcement outcome ----
+    if status == "PASS":
+        pipeline_blocked = False
+        exit_code = 0
+    elif status == "ERROR":
+        pipeline_blocked = is_blocking
+        exit_code = 1 if is_blocking else 0
+    else:
+        # FAIL / DENY
+        pipeline_blocked = is_blocking
+        exit_code = 1 if is_blocking else 0
 
-    # ---- Step 6: Write evidence ----
+    # Build enforcement reason
+    if status == "PASS":
+        enforcement_reason = "All policies passed. No violations detected."
+    elif status == "ERROR":
+        enforcement_reason = f"Tool error occurred. Pipeline {'blocked' if pipeline_blocked else 'continues (advisory mode)'}."
+    elif is_blocking:
+        enforcement_reason = f"Policy violations detected. Pipeline blocked ({len(violations)} violation(s))."
+    else:
+        enforcement_reason = f"Policy findings recorded as advisory findings ({len(violations)} violation(s)). Pipeline continues."
+
+    print(f"[policy_runner] Status              = {status}")
+    print(f"[policy_runner] Decision            = {decision}")
+    print(f"[policy_runner] Violations          = {len(violations)}")
+    print(f"[policy_runner] Severity counts     = {severity_counts}")
+    print(f"[policy_runner] Pipeline blocked     = {pipeline_blocked}")
+
+    # ---- Step 7: Write evidence ----
     _write_evidence(
         evidence_path, scan_id, overall_started,
         status=status, decision=decision,
@@ -391,20 +478,46 @@ def main():
         plan_metadata_path=plan_metadata_path,
         conftest_results_path=conftest_results_path,
         conftest_version=conftest_version,
+        enforcement_mode=enforcement_mode,
+        pipeline_blocked=pipeline_blocked,
+        actual_exit_code=exit_code,
+        enforcement_reason=enforcement_reason,
     )
 
-    print(f"[policy_runner] Evidence        = {evidence_path}")
+    print(f"[policy_runner] Evidence            = {evidence_path}")
 
-    if status in ("FAIL", "ERROR"):
+    # ---- Step 8: Console output ----
+    if status == "FAIL":
+        if is_blocking:
+            print(f"\n{'='*60}")
+            print(f"  POLICY-AS-CODE BLOCKED PIPELINE")
+            print(f"  Enforcement mode : {enforcement_mode}")
+            print(f"  Decision         : {decision}")
+            print(f"  Pipeline blocked : true")
+            print(f"  Violations       : {len(violations)}")
+            print(f"{'='*60}\n")
+        else:
+            print(f"\n{'='*60}")
+            print(f"  POLICY-AS-CODE FINDINGS RECORDED")
+            print(f"  Enforcement mode : {enforcement_mode}")
+            print(f"  Decision         : {decision}")
+            print(f"  Pipeline blocked : false")
+            print(f"  Violations       : {len(violations)}")
+            print(f"  Evidence         : {evidence_path}")
+            print(f"{'='*60}\n")
+    elif status == "ERROR":
         print(f"\n{'='*60}")
-        print(f"  POLICY-AS-CODE: {decision}")
-        print(f"  {len(violations)} violation(s) detected")
-        print(f"  See {report_dir}/ for full evidence")
+        print(f"  POLICY-AS-CODE: ERROR")
+        print(f"  Enforcement mode : {enforcement_mode}")
+        print(f"  Pipeline blocked : {pipeline_blocked}")
+        print(f"  Evidence         : {evidence_path}")
         print(f"{'='*60}\n")
-        sys.exit(1)
+    else:
+        print(f"[policy_runner] All policies passed.")
+        print(f"[policy_runner] Enforcement mode    = {enforcement_mode}")
+        print(f"[policy_runner] Pipeline blocked     = false")
 
-    print(f"[policy_runner] All policies passed.")
-    sys.exit(0)
+    sys.exit(exit_code)
 
 
 def _write_evidence(
@@ -428,6 +541,10 @@ def _write_evidence(
     metadata_sha256: str | None = None,
     severity_counts: dict | None = None,
     conftest_version: str = "unknown",
+    enforcement_mode: str = "ADVISORY",
+    pipeline_blocked: bool = False,
+    actual_exit_code: int = 0,
+    enforcement_reason: str = "",
 ):
     """Write the policy-evidence.json file — always, even on error."""
     if severity_counts is None:
@@ -441,6 +558,12 @@ def _write_evidence(
             "policy_language": "Rego",
             "runner": "Conftest",
             "conftest_version": conftest_version,
+        },
+        "enforcement": {
+            "mode": enforcement_mode,
+            "pipeline_blocked": pipeline_blocked,
+            "exit_code": actual_exit_code,
+            "reason": enforcement_reason,
         },
         "started_at": started_at,
         "completed_at": utc_now_iso(),

@@ -53,15 +53,19 @@ def build_policy_section(scan_id: str) -> dict | None:
 
     Returns None if policy evidence does not exist (stage not yet run).
     """
-    policy_evidence_path = os.path.join("reports", "policy", scan_id, "policy-evidence.json")
+    report_dir = os.path.join("reports", "policy", scan_id)
+    policy_evidence_path = os.path.join(report_dir, "policy-evidence.json")
     evidence = safe_read_json(policy_evidence_path)
     if not isinstance(evidence, dict):
         return None
 
     summary = evidence.get("summary", {})
+    enforcement = evidence.get("enforcement", {})
     return {
         "status": evidence.get("status", "UNKNOWN"),
         "decision": evidence.get("decision", "UNKNOWN"),
+        "enforcement_mode": enforcement.get("mode", "UNKNOWN"),
+        "pipeline_blocked": enforcement.get("pipeline_blocked", False),
         "total_violations": summary.get("total_violations", 0),
         "severity_counts": {
             "critical": summary.get("critical", 0),
@@ -70,7 +74,9 @@ def build_policy_section(scan_id: str) -> dict | None:
             "low": summary.get("low", 0),
         },
         "evidence_path": policy_evidence_path,
-        "input_plan_path": os.path.join("reports", "policy", scan_id, "terraform-plan.json"),
+        "terraform_plan_metadata": os.path.join(report_dir, "terraform-plan-metadata.json"),
+        "terraform_plan_json": os.path.join(report_dir, "terraform-plan.json"),
+        "conftest_results": os.path.join(report_dir, "conftest-results.json"),
         "runner": "Conftest",
         "policy_language": "Rego",
         "policy_engine": "Open Policy Agent",

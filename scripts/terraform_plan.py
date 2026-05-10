@@ -5,14 +5,17 @@ Generate Terraform plan JSON safely without deploying infrastructure.
 
 Pipeline behaviour:
     1. Locate the cloned Terraform repository under repositories/cloned/<SCAN_ID>/
-    2. Run: terraform init -input=false -no-color
-    3. Run: terraform plan -input=false -no-color -out=tfplan
+    2. Run: terraform init -backend=false -input=false -no-color
+    3. Run: terraform plan -refresh=false -input=false -no-color -out=tfplan
     4. Run: terraform show -json tfplan
     5. Save the JSON plan to reports/policy/<SCAN_ID>/terraform-plan.json
     6. Save command metadata to reports/policy/<SCAN_ID>/terraform-plan-metadata.json
-    7. Exit non-zero if plan generation fails.
 
-NEVER runs terraform apply.
+Static-scan friendly:
+    -backend=false  avoids connecting to remote backends (S3, etc.)
+    -refresh=false  avoids refreshing real cloud infrastructure state
+
+NEVER runs terraform apply.  NEVER deploys cloud resources.
 
 Environment variables:
     SCAN_ID — required
@@ -133,10 +136,10 @@ def generate_plan(scan_id: str) -> tuple[bool, str]:
                         github_meta, tf_version, overall_started)
         return False, plan_json_path
 
-    # Step 1: terraform init
-    print("[terraform_plan] Running: terraform init")
+    # Step 1: terraform init -backend=false (no remote state connection)
+    print("[terraform_plan] Running: terraform init -backend=false -input=false -no-color")
     init_cmd = run_cmd(
-        ["terraform", "init", "-input=false", "-no-color"],
+        ["terraform", "init", "-backend=false", "-input=false", "-no-color"],
         cwd=clone_dir,
     )
     commands_executed.append(init_cmd)
@@ -144,16 +147,16 @@ def generate_plan(scan_id: str) -> tuple[bool, str]:
         status = "FAIL"
         error_message = f"terraform init failed (exit {init_cmd['exit_code']})"
         print(f"[terraform_plan] ERROR: {error_message}")
+        print(f"[terraform_plan] stderr: {init_cmd['stderr'][-2000:]}")
         _write_metadata(metadata_path, scan_id, clone_dir, plan_json_path,
                         commands_executed, status, error_message,
                         github_meta, tf_version, overall_started)
         return False, plan_json_path
 
-    # Step 2: terraform plan
-    print("[terraform_plan] Running: terraform plan")
-    plan_bin = os.path.join(clone_dir, "tfplan")
+    # Step 2: terraform plan -refresh=false (no cloud state refresh)
+    print("[terraform_plan] Running: terraform plan -refresh=false -input=false -no-color -out=tfplan")
     plan_cmd = run_cmd(
-        ["terraform", "plan", "-input=false", "-no-color", "-out=tfplan"],
+        ["terraform", "plan", "-refresh=false", "-input=false", "-no-color", "-out=tfplan"],
         cwd=clone_dir,
     )
     commands_executed.append(plan_cmd)
@@ -161,6 +164,7 @@ def generate_plan(scan_id: str) -> tuple[bool, str]:
         status = "FAIL"
         error_message = f"terraform plan failed (exit {plan_cmd['exit_code']})"
         print(f"[terraform_plan] ERROR: {error_message}")
+        print(f"[terraform_plan] stderr: {plan_cmd['stderr'][-2000:]}")
         _write_metadata(metadata_path, scan_id, clone_dir, plan_json_path,
                         commands_executed, status, error_message,
                         github_meta, tf_version, overall_started)
@@ -177,6 +181,7 @@ def generate_plan(scan_id: str) -> tuple[bool, str]:
         status = "FAIL"
         error_message = f"terraform show -json failed (exit {show_cmd['exit_code']})"
         print(f"[terraform_plan] ERROR: {error_message}")
+        print(f"[terraform_plan] stderr: {show_cmd['stderr'][-2000:]}")
         _write_metadata(metadata_path, scan_id, clone_dir, plan_json_path,
                         commands_executed, status, error_message,
                         github_meta, tf_version, overall_started)
@@ -238,6 +243,11 @@ def _write_metadata(
             "github_run_id": github_meta.get("workflow_run_id"),
         },
         "error_message": error_message,
+        "forensic_note": (
+            "Terraform plan was generated with -backend=false (no remote state) "
+            "and -refresh=false (no cloud infrastructure refresh) to support "
+            "static/pre-deployment scanning without requiring live cloud access."
+        ),
     }
 
     safe_write_json(metadata_path, metadata)
