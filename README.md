@@ -123,9 +123,18 @@ Combined static analysis evidence report
         ↓
 Prepare policy validation input (non-blocking handoff)
         ↓
+Terraform plan generation (init / plan / show -json)
+        ↓
+Policy-as-Code enforcement (Conftest / Rego)
+  └── Policy snapshot + SHA256 hashing
+  └── Conftest evaluation against Terraform plan JSON
+  └── Forensic evidence + violation report
+        ↓
+Update combined report with policy results
+        ↓
 Upload all reports as GitHub Actions Artifacts
         ↓
-Continue to policy validation (not yet implemented)
+Enforcement gate (deny violations → pipeline FAIL)
 ```
 
 See [`docs/workflow.md`](docs/workflow.md) for the detailed stage-by-stage workflow.
@@ -298,9 +307,51 @@ The `policy-validation-input.json` file contains:
 - `policy_validation_implemented: false` flag
 - Forensic metadata (SCAN_ID, timestamps, repository context)
 
-The future policy validation model will consume this file.
+The `policy-validation-input.json` was designed as a future handoff file. With the Policy-as-Code Engine now implemented, findings flow directly from the combined evidence into the Conftest evaluation.
 
 ---
+
+## Policy-as-Code Engine (Implemented ✅)
+
+The Policy-as-Code Engine evaluates Terraform plan JSON against custom Rego security and compliance policies using Conftest (which uses OPA internally).
+
+### How It Works
+
+1. **Terraform plan generation** (`terraform_plan.py`): Runs `terraform init / plan / show -json` against the cloned repo. Saves plan JSON and command metadata.
+2. **Policy metadata** (`policy-metadata.json`): Registry of 7 custom policies with version, severity, compliance mapping, and enabled/disabled status.
+3. **Policy snapshot**: Enabled policy files are copied to `reports/policy/<SCAN_ID>/runtime-policies/` and SHA256-hashed per scan.
+4. **Conftest execution**: `conftest test <plan.json> --policy <runtime-policies> --output json`
+5. **Evidence generation** (`policy_runner.py`): Normalises Conftest output into `policy-evidence.json` with full forensic metadata.
+
+### Custom Policies
+
+| Policy ID | File | Name | Severity |
+|---|---|---|---|
+| `CUSTOM_AWS_001` | `aws_security.rego` | Block public SSH ingress | HIGH |
+| `CUSTOM_AWS_002` | `aws_security.rego` | Block public RDP ingress | HIGH |
+| `CUSTOM_AWS_003` | `aws_security.rego` | Block public S3 ACL | CRITICAL |
+| `CUSTOM_AWS_004` | `aws_security.rego` | Prevent S3 encryption removal | CRITICAL |
+| `CUSTOM_TAG_001` | `tagging.rego` | Require Environment tag | LOW |
+| `CUSTOM_TAG_002` | `tagging.rego` | Require Owner tag | LOW |
+| `CUSTOM_IAM_001` | `compliance.rego` | Block IAM wildcard admin | CRITICAL |
+
+### Enforcement Behaviour
+
+| Condition | Status | Decision | Exit Code |
+|---|---|---|---|
+| No policy violations | `PASS` | `ALLOW` | 0 |
+| Deny violations found | `FAIL` | `DENY` | 1 |
+| Tool execution error | `ERROR` | `ERROR` | 1 |
+
+### Forensic Evidence
+
+Each policy evaluation generates:
+- `terraform-plan.json` — the exact plan that was evaluated
+- `terraform-plan-metadata.json` — all terraform commands with timestamps, exit codes, stdout/stderr
+- `conftest-results.json` — raw Conftest output
+- `policy-evidence.json` — normalised evidence with policy snapshot, violation details, severity counts, and input hashes
+- `runtime-policies/` — exact Rego files used for this specific scan (immutable snapshot)
+
 
 ## Report Structure
 
@@ -315,9 +366,19 @@ reports/static/<SCAN_ID>/
 │   ├── trivy-results.json                (raw Trivy output)
 │   └── trivy-evidence.json               (normalized findings)
 └── combined/
-    ├── static-analysis-evidence.json     (combined forensic report)
-    ├── policy-validation-input.json      (input for future policy model)
+    ├── static-analysis-evidence.json     (combined forensic report + policy section)
+    ├── policy-validation-input.json      (input for policy model)
     └── static-analysis-handoff.json      (stage transition record)
+
+reports/policy/<SCAN_ID>/
+├── terraform-plan.json                  (Terraform plan JSON)
+├── terraform-plan-metadata.json          (plan generation forensic metadata)
+├── conftest-results.json                 (raw Conftest output)
+├── policy-evidence.json                  (normalized policy evidence)
+└── runtime-policies/                     (scan-specific policy snapshot)
+    ├── aws_security.rego
+    ├── tagging.rego
+    └── compliance.rego
 ```
 
 ---
@@ -330,6 +391,7 @@ reports/static/<SCAN_ID>/
 - Terraform CLI
 - Checkov: `pip install checkov`
 - Trivy: [Installation guide](https://aquasecurity.github.io/trivy/)
+- Conftest: [Installation guide](https://www.conftest.dev/install/)
 
 ### Running Individual Scripts
 
@@ -339,7 +401,7 @@ export SCAN_ID="SCAN-test1234"
 export REPO_URL="https://github.com/user/repo.git"
 export BRANCH="main"
 
-# Run pipeline stages
+# Run static analysis stages
 python scripts/clone_repository.py
 python scripts/generate_scan_metadata.py
 python scripts/discover_terraform.py
@@ -348,6 +410,20 @@ python scripts/checkov_scan.py
 python scripts/trivy_scan.py
 python scripts/static_analysis_report.py
 python scripts/prepare_policy_validation_input.py
+
+# Run Policy-as-Code stages
+python scripts/terraform_plan.py
+python scripts/policy_runner.py
+
+# Regenerate combined report (includes policy results)
+python scripts/static_analysis_report.py
+```
+
+### Direct Conftest debugging
+
+```bash
+# Run Conftest directly against a plan JSON
+conftest test reports/policy/$SCAN_ID/terraform-plan.json --policy policies/terraform --output json
 ```
 
 ### Running via GitHub Actions
@@ -375,8 +451,13 @@ iac-security-framework/
 │   └── metadata/                        # Scan metadata per scan_id
 │
 ├── policies/
-│   ├── terraform.rego                   # Terraform governance policies (OPA)
-│   └── aws-security.rego               # AWS security policies (OPA)
+│   ├── terraform/                       # Active Rego policies
+│   │   ├── aws_security.rego            # SSH/RDP/S3 ACL/encryption ✅
+│   │   ├── tagging.rego                 # Environment + Owner tags ✅
+│   │   ├── compliance.rego              # IAM wildcard admin ✅
+│   │   └── policy-metadata.json         # Policy registry (7 policies) ✅
+│   ├── terraform.rego                   # Legacy placeholder (Phase 1)
+│   └── aws-security.rego               # Legacy placeholder (Phase 1)
 │
 ├── scripts/
 │   ├── utils/
@@ -390,6 +471,8 @@ iac-security-framework/
 │   ├── trivy_scan.py                   # Trivy config scan + normalisation ✅
 │   ├── static_analysis_report.py       # Combined evidence report ✅
 │   ├── prepare_policy_validation_input.py  # Policy handoff (non-blocking) ✅
+│   ├── terraform_plan.py               # Terraform plan JSON generation ✅
+│   ├── policy_runner.py                # Policy-as-Code runner (Conftest) ✅
 │   ├── enforce_static_policy.py        # Enforcement decision (future blocking mode)
 │   ├── normalize_checkov.py            # Legacy normaliser (superseded)
 │   ├── checkov_forensic_summary.py     # Legacy summary (superseded)
@@ -400,6 +483,7 @@ iac-security-framework/
 │
 ├── reports/
 │   ├── static/<scan_id>/               # Per-scan static reports
+│   ├── policy/<scan_id>/               # Per-scan policy reports ✅
 │   ├── runtime/<scan_id>/              # Per-scan runtime reports (future)
 │   └── final/<scan_id>/                # Per-scan final reports (future)
 │
@@ -439,11 +523,16 @@ iac-security-framework/
 - `scripts/prepare_policy_validation_input.py` — non-blocking policy handoff
 - Non-blocking pipeline design — findings preserved, pipeline continues
 
-### Phase 4 (Next) — Policy Validation Model
-- Policy validation model consuming `policy-validation-input.json`
-- `terraform.rego` — Terraform governance policies
-- `aws-security.rego` — AWS security policies
-- Final enforcement decision (allow / deny / review)
+### Phase 4 — Policy-as-Code Engine ✅
+- **Conftest** as the policy runner (OPA/Rego internally)
+- `policies/terraform/aws_security.rego` — SSH/RDP ingress, S3 ACL, S3 encryption
+- `policies/terraform/tagging.rego` — Environment + Owner tag enforcement
+- `policies/terraform/compliance.rego` — IAM wildcard admin detection
+- `policies/terraform/policy-metadata.json` — 7 policies with version, severity, compliance
+- `scripts/terraform_plan.py` — safe plan generation (init/plan/show -json)
+- `scripts/policy_runner.py` — full forensic-ready policy evaluation
+- Per-scan policy snapshots with SHA256 hashing
+- Enforcement gate — deny violations fail the pipeline
 
 ### Phase 5 — AWS Sandbox Integration
 - Sandbox AWS account configuration

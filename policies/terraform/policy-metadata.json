@@ -1,0 +1,79 @@
+[
+  {
+    "policy_id": "CUSTOM_AWS_001",
+    "file": "aws_security.rego",
+    "name": "Block public SSH ingress",
+    "description": "Deny AWS security groups that allow SSH from 0.0.0.0/0",
+    "severity": "HIGH",
+    "action": "DENY",
+    "enabled": true,
+    "version": 1,
+    "compliance": ["CIS", "NIST", "Internal Baseline"]
+  },
+  {
+    "policy_id": "CUSTOM_AWS_002",
+    "file": "aws_security.rego",
+    "name": "Block public RDP ingress",
+    "description": "Deny AWS security groups that allow RDP from 0.0.0.0/0",
+    "severity": "HIGH",
+    "action": "DENY",
+    "enabled": true,
+    "version": 1,
+    "compliance": ["CIS", "NIST", "Internal Baseline"]
+  },
+  {
+    "policy_id": "CUSTOM_AWS_003",
+    "file": "aws_security.rego",
+    "name": "Block public S3 ACL",
+    "description": "Deny public S3 bucket ACLs where detectable in Terraform plan JSON",
+    "severity": "CRITICAL",
+    "action": "DENY",
+    "enabled": true,
+    "version": 1,
+    "compliance": ["CIS", "NIST", "Internal Baseline"]
+  },
+  {
+    "policy_id": "CUSTOM_AWS_004",
+    "file": "aws_security.rego",
+    "name": "Prevent S3 encryption removal",
+    "description": "Deny Terraform plans that delete S3 server-side encryption configuration",
+    "severity": "CRITICAL",
+    "action": "DENY",
+    "enabled": true,
+    "version": 1,
+    "compliance": ["CIS", "NIST", "Internal Baseline"]
+  },
+  {
+    "policy_id": "CUSTOM_TAG_001",
+    "file": "tagging.rego",
+    "name": "Require Environment tag",
+    "description": "Deny managed resources that do not include an Environment tag",
+    "severity": "LOW",
+    "action": "DENY",
+    "enabled": true,
+    "version": 1,
+    "compliance": ["Internal Governance"]
+  },
+  {
+    "policy_id": "CUSTOM_TAG_002",
+    "file": "tagging.rego",
+    "name": "Require Owner tag",
+    "description": "Deny managed resources that do not include an Owner tag",
+    "severity": "LOW",
+    "action": "DENY",
+    "enabled": true,
+    "version": 1,
+    "compliance": ["Internal Governance"]
+  },
+  {
+    "policy_id": "CUSTOM_IAM_001",
+    "file": "compliance.rego",
+    "name": "Block IAM wildcard administrator policy",
+    "description": "Deny IAM policies that allow Action * on Resource *",
+    "severity": "CRITICAL",
+    "action": "DENY",
+    "enabled": true,
+    "version": 1,
+    "compliance": ["Least Privilege", "CIS", "NIST", "Internal Baseline"]
+  }
+]

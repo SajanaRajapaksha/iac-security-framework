@@ -1,12 +1,14 @@
 # =============================================================================
-# IaC Security Framework — Static Analysis Pipeline
+# IaC Security Framework — Full Pipeline
 #
 # Accepts a GitHub repository URL, clones it, discovers Terraform directories,
 # runs terraform fmt/init/validate, executes Checkov + Trivy static scanning,
 # normalizes findings with local severity mapping, generates combined forensic
-# evidence reports, and prepares handoff input for the future policy validation
-# model.  Static analysis is NON-BLOCKING — findings are preserved as evidence
-# but do not stop the pipeline.
+# evidence reports, generates Terraform plan JSON, runs custom Rego policies
+# via Conftest, and produces forensic-ready evidence at every stage.
+#
+# Static analysis is NON-BLOCKING — findings are preserved as evidence.
+# Policy-as-Code is BLOCKING — deny violations fail the pipeline.
 #
 # Every step is traceable via SCAN_ID.
 # =============================================================================
@@ -30,8 +32,8 @@ on:
         default: "main"
 
 jobs:
-  static-analysis:
-    name: Static Analysis Pipeline
+  security-pipeline:
+    name: Security Pipeline
     runs-on: ubuntu-latest
 
     steps:
@@ -102,6 +104,13 @@ jobs:
           sudo apt-get install -y trivy
           echo "--- Trivy version ---"
           trivy --version
+
+      - name: Install Conftest
+        run: |
+          CONFTEST_VERSION="0.56.0"
+          wget -qO - "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz" | tar xz -C /usr/local/bin conftest
+          echo "--- Conftest version ---"
+          conftest --version
 
       # ================================================================
       # STAGE 1-3: CLONE, METADATA, DISCOVERY
@@ -176,6 +185,29 @@ jobs:
         run: python scripts/prepare_policy_validation_input.py
 
       # ================================================================
+      # STAGE 9: POLICY-AS-CODE ENFORCEMENT
+      # ================================================================
+
+      - name: "Stage 9: Policy-as-Code enforcement (Conftest / Rego)"
+        id: policy_enforcement
+        if: steps.terraform_validation.outcome == 'success'
+        continue-on-error: true
+        run: python scripts/policy_runner.py
+
+      - name: "Stage 9 (skipped): Policy enforcement skipped — validation failed"
+        if: steps.terraform_validation.outcome != 'success'
+        run: |
+          echo "  Policy enforcement SKIPPED — Terraform validation failed"
+
+      # ================================================================
+      # STAGE 10: UPDATE COMBINED REPORT (post-policy)
+      # ================================================================
+
+      - name: "Stage 10: Regenerate combined report with policy results"
+        if: steps.terraform_validation.outcome == 'success'
+        run: python scripts/static_analysis_report.py
+
+      # ================================================================
       # ARTIFACT UPLOAD (always — even on failure)
       # ================================================================
 
@@ -193,11 +225,30 @@ jobs:
           name: static-reports-${{ steps.scan.outputs.scan_id }}
           path: reports/static/${{ steps.scan.outputs.scan_id }}/
 
+      - name: Upload policy reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: policy-reports-${{ steps.scan.outputs.scan_id }}
+          path: reports/policy/${{ steps.scan.outputs.scan_id }}/
+
+      # ================================================================
+      # FINAL ENFORCEMENT GATE
+      # ================================================================
+
+      - name: "Final: Check policy enforcement result"
+        if: steps.terraform_validation.outcome == 'success' && steps.policy_enforcement.outcome == 'failure'
+        run: |
+          echo "========================================"
+          echo "  PIPELINE BLOCKED"
+          echo "  Policy-as-Code enforcement DENIED the plan."
+          echo "  See policy-reports artifact for details."
+          echo "  SCAN_ID = $SCAN_ID"
+          echo "========================================"
+          exit 1
+
       # ---- Future stages (not yet implemented) ----
-      # - Policy validation model (will consume policy-validation-input.json)
-      # - OPA/Rego policy validation
       # - Risk scoring
       # - AWS sandbox deployment
       # - Prowler runtime validation
       # - Forensic evidence package generation
-

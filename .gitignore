@@ -119,6 +119,7 @@ htmlcov/
 reports/static/SCAN-*/
 reports/runtime/SCAN-*/
 reports/final/SCAN-*/
+reports/policy/SCAN-*/
 
 # Also exclude any JSON/SARIF files placed directly in the reports directories
 reports/static/*.json
@@ -126,11 +127,13 @@ reports/static/*.sarif
 reports/runtime/*.json
 reports/runtime/*.sarif
 reports/final/*.json
+reports/policy/*.json
 
 # BUT preserve directory structure via .gitkeep files
 !reports/static/.gitkeep
 !reports/runtime/.gitkeep
 !reports/final/.gitkeep
+!reports/policy/.gitkeep
 
 # =============================================================================
 # EVIDENCE (runtime-generated — do not commit evidence packages)

@@ -6,6 +6,7 @@ evidence from:
     - Terraform validation
     - Checkov (primary scanner)
     - Trivy config (secondary scanner)
+    - Policy-as-Code evidence (if available)
 
 Output:
     reports/static/<SCAN_ID>/combined/static-analysis-evidence.json
@@ -45,6 +46,35 @@ def merge_severity(checkov_sev: dict, trivy_sev: dict) -> dict:
     for sev in merged:
         merged[sev] = checkov_sev.get(sev, 0) + trivy_sev.get(sev, 0)
     return merged
+
+
+def build_policy_section(scan_id: str) -> dict | None:
+    """Load policy evidence and build the policy_as_code report section.
+
+    Returns None if policy evidence does not exist (stage not yet run).
+    """
+    policy_evidence_path = os.path.join("reports", "policy", scan_id, "policy-evidence.json")
+    evidence = safe_read_json(policy_evidence_path)
+    if not isinstance(evidence, dict):
+        return None
+
+    summary = evidence.get("summary", {})
+    return {
+        "status": evidence.get("status", "UNKNOWN"),
+        "decision": evidence.get("decision", "UNKNOWN"),
+        "total_violations": summary.get("total_violations", 0),
+        "severity_counts": {
+            "critical": summary.get("critical", 0),
+            "high": summary.get("high", 0),
+            "medium": summary.get("medium", 0),
+            "low": summary.get("low", 0),
+        },
+        "evidence_path": policy_evidence_path,
+        "input_plan_path": os.path.join("reports", "policy", scan_id, "terraform-plan.json"),
+        "runner": "Conftest",
+        "policy_language": "Rego",
+        "policy_engine": "Open Policy Agent",
+    }
 
 
 def main():
@@ -130,6 +160,14 @@ def main():
         ),
     }
 
+    # ---- Policy-as-Code section (if available) ----
+    policy_section = build_policy_section(scan_id)
+    if policy_section:
+        report["policy_as_code"] = policy_section
+        print(f"[static_analysis_report] Policy section   = included (status={policy_section['status']})")
+    else:
+        print(f"[static_analysis_report] Policy section   = not available (stage not run)")
+
     output_path = os.path.join(combined_dir, "static-analysis-evidence.json")
     safe_write_json(output_path, report)
 
@@ -143,3 +181,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
