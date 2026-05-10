@@ -342,6 +342,10 @@ def extract_violations(structured_results: list, is_source_mode: bool) -> list[d
                                 metadata = meta_candidate
                 else:
                     msg_text = str(raw_msg)
+                    
+                # Conftest 0.56.0 embeds user-defined 'metadata' inside the top-level 'metadata'
+                if metadata and "metadata" in metadata and isinstance(metadata["metadata"], dict):
+                    metadata = metadata["metadata"]
 
                 # Some Conftest versions include filename/namespace at the block
                 # level. Use them as a best-effort fallback for identification.

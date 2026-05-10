@@ -252,3 +252,5 @@ npm-debug.log
 *.temp
 tmp/
 temp/
+
+scripts/utils/list_findings copy.py
