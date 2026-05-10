@@ -69,13 +69,17 @@ def main():
         print("  No Trivy misconfigurations found.\n")
     else:
         for i, finding in enumerate(trivy_findings, 1):
-            severity = finding.get("Severity", "UNKNOWN")
-            check_id = finding.get("MisconfID", finding.get("ID", "UNKNOWN"))
-            title = finding.get("Title", "No Title")
-            resource = finding.get("Target", "Unknown Resource")
+            # Findings in the combined report come from scripts/trivy_scan.py, which
+            # normalizes Trivy output into a stable schema.
+            severity = finding.get("severity", "UNKNOWN")
+            check_id = finding.get("rule_id", finding.get("id", "UNKNOWN"))
+            title = finding.get("rule_name", finding.get("title", "No Title"))
+            resource = finding.get("resource", "Unknown Resource")
+            file_path = finding.get("file_path", finding.get("target_file", "Unknown File"))
             
             print(f"[{severity:^8}] {check_id}: {title}")
-            print(f"           Target:   {resource}\n")
+            print(f"           Target:   {resource}")
+            print(f"           File:     {file_path}\n")
 
     # 3. Policy-as-Code Findings
     policy_section = data.get("policy_as_code", {})
@@ -89,8 +93,8 @@ def main():
         for i, violation in enumerate(policy_violations, 1):
             severity = violation.get("severity", "UNKNOWN")
             policy_id = violation.get("policy_id", "UNKNOWN")
-            title = violation.get("title", violation.get("message", "No Title"))
-            resource = violation.get("resource", "Unknown Resource")
+            title = violation.get("title", violation.get("reason", violation.get("message", "No Title")))
+            resource = violation.get("resource", violation.get("resource_type", "Unknown Resource"))
             file_path = violation.get("input_file", "Unknown File")
             
             print(f"[{severity:^8}] {policy_id}: {title}")

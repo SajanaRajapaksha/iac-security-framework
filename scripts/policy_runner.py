@@ -306,36 +306,60 @@ def extract_violations(structured_results: list, is_source_mode: bool) -> list[d
                 if not isinstance(failure, dict):
                     continue
 
-                msg = failure.get("msg", "No message provided")
-                metadata = failure.get("metadata", {})
-                
-                if isinstance(metadata, dict) and metadata:
+                # Conftest JSON output represents each failure as an object with a
+                # "msg". When policies emit structured objects (common pattern),
+                # that object lands inside failure.msg, e.g.:
+                #   {"msg": "...", "metadata": {...}}
+                # Older/other policies may emit plain strings.
+                raw_msg = failure.get("msg", "No message provided")
+                msg_text = raw_msg
+                metadata = None
+
+                if isinstance(raw_msg, dict):
+                    msg_text = raw_msg.get("msg", raw_msg.get("message", "No message provided"))
+                    meta_candidate = raw_msg.get("metadata", {})
+                    if isinstance(meta_candidate, dict) and meta_candidate:
+                        metadata = meta_candidate
+                elif isinstance(raw_msg, str):
+                    msg_text = raw_msg
+                else:
+                    msg_text = str(raw_msg)
+
+                # Some Conftest versions include filename/namespace at the block
+                # level. Use them as a best-effort fallback for identification.
+                block_filename = block.get("filename", "") if isinstance(block.get("filename", ""), str) else ""
+                block_namespace = block.get("namespace", "") if isinstance(block.get("namespace", ""), str) else ""
+
+                if metadata:
                     violation = {
-                        "input_file": input_file if is_source_mode else block.get("filename", ""),
-                        "message": str(msg),
-                        "policy_id": metadata.get("policy_id", "UNKNOWN"),
-                        "title": metadata.get("title", "Unknown Policy"),
+                        "input_file": input_file if is_source_mode else block_filename,
+                        "message": str(msg_text),
+                        "policy_id": metadata.get("policy_id", block_namespace or "UNKNOWN"),
+                        "title": metadata.get("title", block_namespace or "Unknown Policy"),
                         "severity": metadata.get("severity", "UNKNOWN"),
                         "resource": metadata.get("resource", "unknown_resource"),
                         "resource_type": metadata.get("resource_type", "unknown_type"),
-                        "reason": metadata.get("reason", str(msg)),
+                        "reason": metadata.get("reason", str(msg_text)),
                         "compliance": metadata.get("compliance", []),
                         "remediation_hint": metadata.get("remediation_hint", ""),
-                        "input_type": metadata.get("input_type", "terraform_source_hcl" if is_source_mode else "terraform_plan_json")
+                        "input_type": metadata.get(
+                            "input_type",
+                            "terraform_source_hcl" if is_source_mode else "terraform_plan_json",
+                        ),
                     }
                 else:
                     violation = {
-                        "input_file": input_file if is_source_mode else block.get("filename", ""),
-                        "message": str(msg),
-                        "policy_id": "UNKNOWN",
-                        "title": "Unknown Policy",
+                        "input_file": input_file if is_source_mode else block_filename,
+                        "message": str(msg_text),
+                        "policy_id": block_namespace or "UNKNOWN",
+                        "title": block_namespace or "Unknown Policy",
                         "severity": "UNKNOWN",
                         "resource": "unknown_resource",
                         "resource_type": "unknown_type",
-                        "reason": str(msg),
+                        "reason": str(msg_text),
                         "compliance": [],
                         "remediation_hint": "",
-                        "input_type": "terraform_source_hcl" if is_source_mode else "terraform_plan_json"
+                        "input_type": "terraform_source_hcl" if is_source_mode else "terraform_plan_json",
                     }
 
                 violations.append(violation)
