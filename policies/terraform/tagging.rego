@@ -41,7 +41,7 @@ deny[result] {
     some resource_name
     resource_block := resources_of_type[resource_name]
 
-    # Assume we only care about aws_ resources that can be tagged (exclude data sources because input.resource does not contain data, input.data does)
+    # Assume we only care about aws_ resources that can be tagged (exclude data sources)
     startswith(type_name, "aws_")
 
     tags := get_tags(resource_block)
@@ -50,15 +50,18 @@ deny[result] {
     not has_tag(tags, "Environment")
 
     result := {
-        "policy_id": "CUSTOM_TAG_001",
-        "title": "Require Environment tag",
-        "severity": "LOW",
-        "resource": sprintf("%v.%v", [type_name, resource_name]),
-        "resource_type": type_name,
-        "reason": sprintf("Resource '%v.%v' (type: %v) does not include a required 'Environment' tag. All managed resources must be tagged with their deployment environment.", [type_name, resource_name, type_name]),
-        "compliance": ["Internal Governance"],
-        "remediation_hint": "Add an 'Environment' tag with a value such as 'sandbox', 'staging', or 'production'.",
-        "input_type": "terraform_source_hcl"
+        "msg": sprintf("Resource '%v.%v' (type: %v) does not include a required 'Environment' tag. All managed resources must be tagged with their deployment environment.", [type_name, resource_name, type_name]),
+        "metadata": {
+            "policy_id": "CUSTOM_TAG_001",
+            "title": "Require Environment tag",
+            "severity": "LOW",
+            "resource": sprintf("%v.%v", [type_name, resource_name]),
+            "resource_type": type_name,
+            "reason": sprintf("Resource '%v.%v' (type: %v) does not include a required 'Environment' tag. All managed resources must be tagged with their deployment environment.", [type_name, resource_name, type_name]),
+            "compliance": ["Internal Governance"],
+            "remediation_hint": "Add an 'Environment' tag with a value such as 'sandbox', 'staging', or 'production'.",
+            "input_type": "terraform_source_hcl"
+        }
     }
 }
 
@@ -79,14 +82,17 @@ deny[result] {
     not has_tag(tags, "Owner")
 
     result := {
-        "policy_id": "CUSTOM_TAG_002",
-        "title": "Require Owner tag",
-        "severity": "LOW",
-        "resource": sprintf("%v.%v", [type_name, resource_name]),
-        "resource_type": type_name,
-        "reason": sprintf("Resource '%v.%v' (type: %v) does not include a required 'Owner' tag. All managed resources must identify their responsible owner.", [type_name, resource_name, type_name]),
-        "compliance": ["Internal Governance"],
-        "remediation_hint": "Add an 'Owner' tag with the name or email of the responsible team or individual.",
-        "input_type": "terraform_source_hcl"
+        "msg": sprintf("Resource '%v.%v' (type: %v) does not include a required 'Owner' tag. All managed resources must identify their responsible owner.", [type_name, resource_name, type_name]),
+        "metadata": {
+            "policy_id": "CUSTOM_TAG_002",
+            "title": "Require Owner tag",
+            "severity": "LOW",
+            "resource": sprintf("%v.%v", [type_name, resource_name]),
+            "resource_type": type_name,
+            "reason": sprintf("Resource '%v.%v' (type: %v) does not include a required 'Owner' tag. All managed resources must identify their responsible owner.", [type_name, resource_name, type_name]),
+            "compliance": ["Internal Governance"],
+            "remediation_hint": "Add an 'Owner' tag with the name or email of the responsible team or individual.",
+            "input_type": "terraform_source_hcl"
+        }
     }
 }

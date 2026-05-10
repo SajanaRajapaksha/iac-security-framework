@@ -59,14 +59,17 @@ deny[result] {
     is_wildcard_resource(statement)
 
     result := {
-        "policy_id": "CUSTOM_IAM_001",
-        "title": "Block IAM wildcard administrator policy",
-        "severity": "CRITICAL",
-        "resource": sprintf("%v.%v", [type_name, resource_name]),
-        "resource_type": type_name,
-        "reason": sprintf("IAM policy '%v.%v' contains a statement with Action:'*' and Resource:'*'. This grants full administrative access and violates least privilege.", [type_name, resource_name]),
-        "compliance": ["Least Privilege", "CIS", "NIST", "Internal Baseline"],
-        "remediation_hint": "Scope IAM policy actions and resources to the minimum required. Avoid using '*' wildcards.",
-        "input_type": "terraform_source_hcl"
+        "msg": sprintf("IAM policy '%v.%v' contains a statement with Action:'*' and Resource:'*'. This grants full administrative access and violates least privilege.", [type_name, resource_name]),
+        "metadata": {
+            "policy_id": "CUSTOM_IAM_001",
+            "title": "Block IAM wildcard administrator policy",
+            "severity": "CRITICAL",
+            "resource": sprintf("%v.%v", [type_name, resource_name]),
+            "resource_type": type_name,
+            "reason": sprintf("IAM policy '%v.%v' contains a statement with Action:'*' and Resource:'*'. This grants full administrative access and violates least privilege.", [type_name, resource_name]),
+            "compliance": ["Least Privilege", "CIS", "NIST", "Internal Baseline"],
+            "remediation_hint": "Scope IAM policy actions and resources to the minimum required. Avoid using '*' wildcards.",
+            "input_type": "terraform_source_hcl"
+        }
     }
 }

@@ -15,27 +15,16 @@ Pipeline behaviour:
        a. Generate Terraform plan JSON (calls terraform_plan.generate_plan).
        b. Load, select, and snapshot policies.
        c. Run Conftest against the plan JSON.
-    4. Write forensic-ready policy-evidence.json.
-    5. Exit code depends on POLICY_ENFORCEMENT_MODE.
-
-Distinguishes between:
-    - Policy violations (Conftest returns findings) → status=FAIL, decision=DENY
-    - Tool errors (Conftest cannot run)             → status=ERROR, decision=ERROR
-    - Clean pass (no violations)                    → status=PASS, decision=ALLOW
+    4. Write forensic-ready policy-evidence.json and conftest-results.json.
+    5. Exit code depends on POLICY_ENFORCEMENT_MODE and Conftest execution status.
 
 Enforcement modes (POLICY_ENFORCEMENT_MODE env var):
     - advisory  (default) — violations recorded as findings, exit 0
     - blocking            — violations block pipeline, exit 1
 
 Input modes (POLICY_INPUT_MODE env var):
-    - source (default) — direct evaluation of .tf files (no AWS credentials required)
+    - source (default) — direct evaluation of .tf files
     - plan             — evaluation of terraform-plan.json
-
-Environment variables:
-    SCAN_ID                  — required
-    POLICY_ENFORCEMENT_MODE  — optional (default: advisory)
-    POLICY_INPUT_MODE        — optional (default: source)
-    REPO_URL / BRANCH / GITHUB_SHA / GITHUB_RUN_ID — optional context
 """
 
 import json
@@ -152,9 +141,7 @@ def discover_terraform_source_files(clone_dir: str) -> list[str]:
     ignore_dirs = {".terraform", ".git", "reports"}
     
     for root, dirs, files in os.walk(clone_dir):
-        # Modify dirs in-place to skip ignored directories
         dirs[:] = [d for d in dirs if d not in ignore_dirs and not d.startswith(".")]
-        
         for file in files:
             if file.endswith(".tf") or file.endswith(".tf.json"):
                 discovered.append(os.path.join(root, file))
@@ -167,17 +154,13 @@ def discover_terraform_source_files(clone_dir: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def load_policy_metadata(path: str) -> list[dict]:
-    """Load policy-metadata.json."""
     data = safe_read_json(path)
     if isinstance(data, list):
         return data
     return []
 
-
 def get_enabled_policies(metadata: list[dict]) -> list[dict]:
-    """Return only enabled policies."""
     return [p for p in metadata if p.get("enabled", False)]
-
 
 def snapshot_policies(
     enabled_policies: list[dict],
@@ -221,7 +204,7 @@ def snapshot_policies(
 # ---------------------------------------------------------------------------
 
 def run_conftest_plan(plan_json_path: str, policy_dir: str) -> tuple[dict, list]:
-    """Run Conftest in plan mode and return (cmd_record, parsed_results)."""
+    """Run Conftest in plan mode and return (cmd_record, structured_results)."""
     cmd = [
         "conftest", "test",
         plan_json_path,
@@ -232,24 +215,32 @@ def run_conftest_plan(plan_json_path: str, policy_dir: str) -> tuple[dict, list]
     cmd_record = run_cmd(cmd)
     cmd_record["input_file"] = plan_json_path
     
-    parsed_results = []
+    parsed = []
     stdout = cmd_record["stdout"]
     if stdout.strip():
         try:
-            parsed_results = json.loads(stdout)
+            parsed = json.loads(stdout)
         except json.JSONDecodeError:
             pass
 
-    return cmd_record, parsed_results
+    structured_results = [{
+        "input_file": plan_json_path,
+        "command": cmd_record,
+        "parsed_output": parsed,
+        "raw_stdout": cmd_record["stdout"],
+        "raw_stderr": cmd_record["stderr"]
+    }]
+
+    return cmd_record, structured_results
 
 
 def run_conftest_source(source_files: list[str], policy_dir: str) -> tuple[list[dict], list]:
     """Run Conftest sequentially per source file.
     
-    Returns (list_of_cmd_records, combined_parsed_results).
+    Returns (list_of_cmd_records, structured_results).
     """
     cmd_records = []
-    combined_results = []
+    structured_results = []
     
     for file_path in source_files:
         cmd = [
@@ -264,79 +255,95 @@ def run_conftest_source(source_files: list[str], policy_dir: str) -> tuple[list[
         cmd_record["input_file"] = file_path
         cmd_records.append(cmd_record)
         
+        parsed = []
         stdout = cmd_record["stdout"]
         if stdout.strip():
             try:
                 parsed = json.loads(stdout)
-                # Conftest usually returns a list of results per test run.
-                # Inject the input file into each result block to track origin.
-                if isinstance(parsed, list):
-                    for block in parsed:
-                        if isinstance(block, dict):
-                            block["_source_file"] = file_path
-                    combined_results.extend(parsed)
             except json.JSONDecodeError:
                 pass
                 
-    return cmd_records, combined_results
+        structured_results.append({
+            "input_file": file_path,
+            "command": cmd_record,
+            "parsed_output": parsed,
+            "raw_stdout": cmd_record["stdout"],
+            "raw_stderr": cmd_record["stderr"]
+        })
+                
+    return cmd_records, structured_results
 
 
 # ---------------------------------------------------------------------------
 # Results normalisation
 # ---------------------------------------------------------------------------
 
-def extract_violations(conftest_results: list, is_source_mode: bool) -> list[dict]:
-    """Extract violation entries from Conftest JSON output."""
+def extract_violations(structured_results: list, is_source_mode: bool) -> list[dict]:
+    """Extract and normalize violation entries from structured Conftest JSON output."""
     violations = []
-    if not isinstance(conftest_results, list):
+    if not isinstance(structured_results, list):
         return violations
 
-    for result_block in conftest_results:
-        if not isinstance(result_block, dict):
+    for res in structured_results:
+        if not isinstance(res, dict):
             continue
             
-        source_file = result_block.get("_source_file", "")
+        input_file = res.get("input_file", "")
+        parsed_output = res.get("parsed_output", [])
         
-        failures = result_block.get("failures", [])
-        if not isinstance(failures, list):
+        if not isinstance(parsed_output, list):
             continue
-
-        for failure in failures:
-            if not isinstance(failure, dict):
+            
+        for block in parsed_output:
+            if not isinstance(block, dict):
                 continue
 
-            msg = failure.get("msg", "")
-            metadata = failure.get("metadata", {})
+            failures = block.get("failures", [])
+            if not isinstance(failures, list):
+                continue
 
-            # msg might be a JSON string (structured deny result)
-            violation = {}
-            if isinstance(msg, str) and msg.strip().startswith("{"):
-                try:
-                    violation = json.loads(msg)
-                except json.JSONDecodeError:
-                    violation = {"reason": msg}
-            elif isinstance(msg, dict):
-                violation = msg
-            elif isinstance(metadata, dict) and metadata:
-                violation = metadata
-                if "reason" not in violation and isinstance(msg, str):
-                    violation["reason"] = msg
-            else:
-                violation = {"reason": str(msg)}
+            for failure in failures:
+                if not isinstance(failure, dict):
+                    continue
+
+                msg = failure.get("msg", "No message provided")
+                metadata = failure.get("metadata", {})
                 
-            # Inject source tracking for source mode
-            if is_source_mode:
-                violation["input_file"] = source_file
-                if "input_type" not in violation:
-                    violation["input_type"] = "terraform_source_hcl"
+                if isinstance(metadata, dict) and metadata:
+                    violation = {
+                        "input_file": input_file if is_source_mode else block.get("filename", ""),
+                        "message": str(msg),
+                        "policy_id": metadata.get("policy_id", "UNKNOWN"),
+                        "title": metadata.get("title", "Unknown Policy"),
+                        "severity": metadata.get("severity", "UNKNOWN"),
+                        "resource": metadata.get("resource", "unknown_resource"),
+                        "resource_type": metadata.get("resource_type", "unknown_type"),
+                        "reason": metadata.get("reason", str(msg)),
+                        "compliance": metadata.get("compliance", []),
+                        "remediation_hint": metadata.get("remediation_hint", ""),
+                        "input_type": metadata.get("input_type", "terraform_source_hcl" if is_source_mode else "terraform_plan_json")
+                    }
+                else:
+                    violation = {
+                        "input_file": input_file if is_source_mode else block.get("filename", ""),
+                        "message": str(msg),
+                        "policy_id": "UNKNOWN",
+                        "title": "Unknown Policy",
+                        "severity": "UNKNOWN",
+                        "resource": "unknown_resource",
+                        "resource_type": "unknown_type",
+                        "reason": str(msg),
+                        "compliance": [],
+                        "remediation_hint": "",
+                        "input_type": "terraform_source_hcl" if is_source_mode else "terraform_plan_json"
+                    }
 
-            violations.append(violation)
+                violations.append(violation)
 
     return violations
 
 
 def build_severity_counts(violations: list[dict]) -> dict:
-    """Count violations by severity."""
     counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
     for v in violations:
         sev = v.get("severity", "").upper()
@@ -390,7 +397,6 @@ def main():
     print(f"[policy_runner] Enforcement mode    = {enforcement_mode}")
     print(f"[policy_runner] Input mode          = {input_mode}")
 
-    # Variables tracking execution context
     plan_json_path = None
     plan_metadata_path = None
     plan_sha256 = None
@@ -489,38 +495,42 @@ def main():
     print("[policy_runner] Running Conftest...")
 
     if is_source_mode:
-        cmds, conftest_results = run_conftest_source(discovered_files, runtime_policy_dir)
+        cmds, structured_results = run_conftest_source(discovered_files, runtime_policy_dir)
         commands_executed.extend(cmds)
-        # Check if any command was a tool error (exit code < 0 or > 1)
-        is_tool_error = any(c["exit_code"] < 0 or c["exit_code"] > 1 for c in cmds)
-        error_stderr = next((c["stderr"] for c in cmds if c["exit_code"] < 0 or c["exit_code"] > 1), "")
     else:
-        cmd, conftest_results = run_conftest_plan(plan_json_path, runtime_policy_dir)
+        cmd, structured_results = run_conftest_plan(plan_json_path, runtime_policy_dir)
         commands_executed.append(cmd)
-        is_tool_error = cmd["exit_code"] < 0 or cmd["exit_code"] > 1
-        error_stderr = cmd["stderr"]
 
     # Save raw Conftest results
     safe_write_json(
         conftest_results_path,
         {
             "input_mode": input_mode,
-            "results": conftest_results
+            "results": structured_results
         }
     )
 
-    # ---- Step 4: Determine status ----
-    violations = []
-    if not is_tool_error:
-        violations = extract_violations(conftest_results, is_source_mode)
+    # Calculate status from command execution
+    has_violations = False
+    is_tool_error = False
+    error_stderrs = []
 
+    for c in commands_executed:
+        if c["exit_code"] == 1:
+            has_violations = True
+        elif c["exit_code"] < 0 or c["exit_code"] > 1:
+            is_tool_error = True
+            error_stderrs.append(c["stderr"])
+
+    # Extract violations if no tool error blocked us entirely
+    violations = extract_violations(structured_results, is_source_mode)
     severity_counts = build_severity_counts(violations)
 
     if is_tool_error:
         status = "ERROR"
         decision = "ERROR"
-        error_message = f"Conftest execution error: {error_stderr[:500]}"
-    elif len(violations) > 0:
+        error_message = f"Conftest execution error(s): {' | '.join(error_stderrs)}".strip()[:2000]
+    elif has_violations or len(violations) > 0:
         status = "FAIL"
         decision = "DENY"
         error_message = None
@@ -529,7 +539,7 @@ def main():
         decision = "ALLOW"
         error_message = None
 
-    # ---- Step 5: Determine enforcement outcome ----
+    # ---- Step 4: Determine enforcement outcome ----
     if status == "PASS":
         pipeline_blocked = False
         exit_code = 0
@@ -552,7 +562,7 @@ def main():
     print(f"[policy_runner] Severity counts     = {severity_counts}")
     print(f"[policy_runner] Pipeline blocked     = {pipeline_blocked}")
 
-    # ---- Step 6: Write evidence ----
+    # ---- Step 5: Write evidence ----
     _write_evidence(
         evidence_path, scan_id, overall_started,
         input_mode=input_mode,
@@ -581,7 +591,7 @@ def main():
 
     print(f"[policy_runner] Evidence            = {evidence_path}")
 
-    # ---- Step 7: Console output ----
+    # ---- Step 6: Console output ----
     if status == "FAIL":
         if is_blocking:
             print(f"\n{'='*60}")
@@ -644,7 +654,6 @@ def _write_evidence(
     plan_sha256: str | None = None,
     plan_metadata_path: str | None = None,
 ):
-    """Write the policy-evidence.json file."""
     if severity_counts is None:
         severity_counts = build_severity_counts(violations)
         

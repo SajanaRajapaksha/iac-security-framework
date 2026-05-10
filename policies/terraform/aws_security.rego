@@ -63,15 +63,18 @@ deny[result] {
     is_public_cidr(cidr_blocks)
 
     result := {
-        "policy_id": "CUSTOM_AWS_001",
-        "title": "Block public SSH ingress",
-        "severity": "HIGH",
-        "resource": sprintf("aws_security_group.%v", [name]),
-        "resource_type": "aws_security_group",
-        "reason": sprintf("Security group '%v' allows SSH (port 22) ingress from 0.0.0.0/0 or ::/0. Public SSH access enables brute-force and lateral movement attacks.", [name]),
-        "compliance": ["CIS", "NIST", "Internal Baseline"],
-        "remediation_hint": "Restrict SSH ingress to specific trusted CIDR blocks or use a bastion host / VPN.",
-        "input_type": "terraform_source_hcl"
+        "msg": sprintf("Security group '%v' allows SSH (port 22) ingress from 0.0.0.0/0 or ::/0. Public SSH access enables brute-force and lateral movement attacks.", [name]),
+        "metadata": {
+            "policy_id": "CUSTOM_AWS_001",
+            "title": "Block public SSH ingress",
+            "severity": "HIGH",
+            "resource": sprintf("aws_security_group.%v", [name]),
+            "resource_type": "aws_security_group",
+            "reason": sprintf("Security group '%v' allows SSH (port 22) ingress from 0.0.0.0/0 or ::/0. Public SSH access enables brute-force and lateral movement attacks.", [name]),
+            "compliance": ["CIS", "NIST", "Internal Baseline"],
+            "remediation_hint": "Restrict SSH ingress to specific trusted CIDR blocks or use a bastion host / VPN.",
+            "input_type": "terraform_source_hcl"
+        }
     }
 }
 
@@ -90,15 +93,18 @@ deny[result] {
     is_public_cidr(ipv6_blocks)
 
     result := {
-        "policy_id": "CUSTOM_AWS_001",
-        "title": "Block public SSH ingress",
-        "severity": "HIGH",
-        "resource": sprintf("aws_security_group.%v", [name]),
-        "resource_type": "aws_security_group",
-        "reason": sprintf("Security group '%v' allows SSH (port 22) ingress from ::/0 (IPv6). Public SSH access enables brute-force and lateral movement attacks.", [name]),
-        "compliance": ["CIS", "NIST", "Internal Baseline"],
-        "remediation_hint": "Restrict SSH ingress to specific trusted CIDR blocks or use a bastion host / VPN.",
-        "input_type": "terraform_source_hcl"
+        "msg": sprintf("Security group '%v' allows SSH (port 22) ingress from ::/0 (IPv6). Public SSH access enables brute-force and lateral movement attacks.", [name]),
+        "metadata": {
+            "policy_id": "CUSTOM_AWS_001",
+            "title": "Block public SSH ingress",
+            "severity": "HIGH",
+            "resource": sprintf("aws_security_group.%v", [name]),
+            "resource_type": "aws_security_group",
+            "reason": sprintf("Security group '%v' allows SSH (port 22) ingress from ::/0 (IPv6). Public SSH access enables brute-force and lateral movement attacks.", [name]),
+            "compliance": ["CIS", "NIST", "Internal Baseline"],
+            "remediation_hint": "Restrict SSH ingress to specific trusted CIDR blocks or use a bastion host / VPN.",
+            "input_type": "terraform_source_hcl"
+        }
     }
 }
 
@@ -120,15 +126,18 @@ deny[result] {
     is_public_cidr(cidr_blocks)
 
     result := {
-        "policy_id": "CUSTOM_AWS_002",
-        "title": "Block public RDP ingress",
-        "severity": "HIGH",
-        "resource": sprintf("aws_security_group.%v", [name]),
-        "resource_type": "aws_security_group",
-        "reason": sprintf("Security group '%v' allows RDP (port 3389) ingress from 0.0.0.0/0 or ::/0. Public RDP access is a common attack vector.", [name]),
-        "compliance": ["CIS", "NIST", "Internal Baseline"],
-        "remediation_hint": "Restrict RDP ingress to specific trusted CIDR blocks or use a bastion host / VPN.",
-        "input_type": "terraform_source_hcl"
+        "msg": sprintf("Security group '%v' allows RDP (port 3389) ingress from 0.0.0.0/0 or ::/0. Public RDP access is a common attack vector.", [name]),
+        "metadata": {
+            "policy_id": "CUSTOM_AWS_002",
+            "title": "Block public RDP ingress",
+            "severity": "HIGH",
+            "resource": sprintf("aws_security_group.%v", [name]),
+            "resource_type": "aws_security_group",
+            "reason": sprintf("Security group '%v' allows RDP (port 3389) ingress from 0.0.0.0/0 or ::/0. Public RDP access is a common attack vector.", [name]),
+            "compliance": ["CIS", "NIST", "Internal Baseline"],
+            "remediation_hint": "Restrict RDP ingress to specific trusted CIDR blocks or use a bastion host / VPN.",
+            "input_type": "terraform_source_hcl"
+        }
     }
 }
 
@@ -146,15 +155,18 @@ deny[result] {
     is_public_cidr(ipv6_blocks)
 
     result := {
-        "policy_id": "CUSTOM_AWS_002",
-        "title": "Block public RDP ingress",
-        "severity": "HIGH",
-        "resource": sprintf("aws_security_group.%v", [name]),
-        "resource_type": "aws_security_group",
-        "reason": sprintf("Security group '%v' allows RDP (port 3389) ingress from ::/0 (IPv6). Public RDP access is a common attack vector.", [name]),
-        "compliance": ["CIS", "NIST", "Internal Baseline"],
-        "remediation_hint": "Restrict RDP ingress to specific trusted CIDR blocks or use a bastion host / VPN.",
-        "input_type": "terraform_source_hcl"
+        "msg": sprintf("Security group '%v' allows RDP (port 3389) ingress from ::/0 (IPv6). Public RDP access is a common attack vector.", [name]),
+        "metadata": {
+            "policy_id": "CUSTOM_AWS_002",
+            "title": "Block public RDP ingress",
+            "severity": "HIGH",
+            "resource": sprintf("aws_security_group.%v", [name]),
+            "resource_type": "aws_security_group",
+            "reason": sprintf("Security group '%v' allows RDP (port 3389) ingress from ::/0 (IPv6). Public RDP access is a common attack vector.", [name]),
+            "compliance": ["CIS", "NIST", "Internal Baseline"],
+            "remediation_hint": "Restrict RDP ingress to specific trusted CIDR blocks or use a bastion host / VPN.",
+            "input_type": "terraform_source_hcl"
+        }
     }
 }
 
@@ -171,15 +183,18 @@ deny[result] {
     public_acl_values[acl_value]
 
     result := {
-        "policy_id": "CUSTOM_AWS_003",
-        "title": "Block public S3 ACL",
-        "severity": "CRITICAL",
-        "resource": sprintf("aws_s3_bucket_acl.%v", [name]),
-        "resource_type": "aws_s3_bucket_acl",
-        "reason": sprintf("S3 bucket ACL '%v' uses public ACL '%v'. Public S3 ACLs can expose sensitive data to the internet.", [name, acl_value]),
-        "compliance": ["CIS", "NIST", "Internal Baseline"],
-        "remediation_hint": "Set the S3 bucket ACL to 'private' and use bucket policies for controlled access.",
-        "input_type": "terraform_source_hcl"
+        "msg": sprintf("S3 bucket ACL '%v' uses public ACL '%v'. Public S3 ACLs can expose sensitive data to the internet.", [name, acl_value]),
+        "metadata": {
+            "policy_id": "CUSTOM_AWS_003",
+            "title": "Block public S3 ACL",
+            "severity": "CRITICAL",
+            "resource": sprintf("aws_s3_bucket_acl.%v", [name]),
+            "resource_type": "aws_s3_bucket_acl",
+            "reason": sprintf("S3 bucket ACL '%v' uses public ACL '%v'. Public S3 ACLs can expose sensitive data to the internet.", [name, acl_value]),
+            "compliance": ["CIS", "NIST", "Internal Baseline"],
+            "remediation_hint": "Set the S3 bucket ACL to 'private' and use bucket policies for controlled access.",
+            "input_type": "terraform_source_hcl"
+        }
     }
 }
 
@@ -191,14 +206,17 @@ deny[result] {
     public_acl_values[acl_value]
 
     result := {
-        "policy_id": "CUSTOM_AWS_003",
-        "title": "Block public S3 ACL",
-        "severity": "CRITICAL",
-        "resource": sprintf("aws_s3_bucket.%v", [name]),
-        "resource_type": "aws_s3_bucket",
-        "reason": sprintf("S3 bucket '%v' uses legacy public ACL '%v'. Public ACLs can expose sensitive data.", [name, acl_value]),
-        "compliance": ["CIS", "NIST", "Internal Baseline"],
-        "remediation_hint": "Remove the legacy 'acl' argument and use aws_s3_bucket_acl with 'private' or bucket policies.",
-        "input_type": "terraform_source_hcl"
+        "msg": sprintf("S3 bucket '%v' uses legacy public ACL '%v'. Public ACLs can expose sensitive data.", [name, acl_value]),
+        "metadata": {
+            "policy_id": "CUSTOM_AWS_003",
+            "title": "Block public S3 ACL",
+            "severity": "CRITICAL",
+            "resource": sprintf("aws_s3_bucket.%v", [name]),
+            "resource_type": "aws_s3_bucket",
+            "reason": sprintf("S3 bucket '%v' uses legacy public ACL '%v'. Public ACLs can expose sensitive data.", [name, acl_value]),
+            "compliance": ["CIS", "NIST", "Internal Baseline"],
+            "remediation_hint": "Remove the legacy 'acl' argument and use aws_s3_bucket_acl with 'private' or bucket policies.",
+            "input_type": "terraform_source_hcl"
+        }
     }
 }
