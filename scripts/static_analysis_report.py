@@ -85,6 +85,7 @@ def build_policy_section(scan_id: str) -> dict | None:
         "runner": "Conftest",
         "policy_language": "Rego",
         "policy_engine": "Open Policy Agent",
+        "violations": evidence.get("violations", []),
     }
     
     if evidence.get("input_mode") == "PLAN":
