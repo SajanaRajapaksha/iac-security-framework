@@ -10,92 +10,136 @@ The pipeline workflow describes the sequence of stages that every repository sca
 
 The framework accepts **GitHub repository URLs** as input. It never assumes a specific Terraform project layout — it dynamically discovers what Terraform structure exists inside the cloned repository.
 
----
+### Implementation Status
 
-## Stage 1: Repository Cloning & Scan Initialisation
-
-**Trigger:** User provides a GitHub repository URL via the GitHub Actions `workflow_dispatch` input (or future dashboard API call).
-
-**Script:** `scripts/clone_repository.py` + `scripts/generate_scan_metadata.py`
-
-**Actions:**
-1. Validate repository URL
-2. Generate unique `scan_id`: `SCAN-<8-char-UUID-prefix>`
-3. Create isolated directory: `repositories/cloned/<scan_id>/`
-4. Clone repository: `git clone --depth 1 --branch <branch> <url> repositories/cloned/<scan_id>/`
-5. Record git commit SHA (`git rev-parse HEAD`)
-6. Record clone timestamp (UTC)
-
-**Evidence produced:** ✅ Clone metadata (repository URL, branch, commit SHA, clone time)
+| Stage | Status |
+|---|---|
+| Stage 1 — Repository Cloning | ✅ Implemented |
+| Stage 2 — Scan Metadata (SHA256 hashing) | ✅ Implemented |
+| Stage 3 — Terraform Discovery | ✅ Implemented |
+| Stage 4 — Terraform Validation (fmt/init/validate) | ✅ Implemented |
+| Stages 5–12 | 🔮 Planned |
 
 ---
 
-## Stage 2: Terraform Discovery
+## Stage 1: Repository Cloning ✅
 
-**Trigger:** Automatic — follows immediately after cloning.
+**Trigger:** User provides a GitHub repository URL via `workflow_dispatch` input. For push/PR triggers, defaults to the current repository.
 
-**Script:** `scripts/discover_terraform.py`
+**Script:** `scripts/clone_repository.py`
 
-**Actions:**
-1. Recursively walk `repositories/cloned/<scan_id>/`
-2. Collect all files with `.tf` extension (excluding `.terraform/`, `.git/`)
-3. Identify **root module** directories (directories with `main.tf` or direct resource definitions)
-4. Identify **child module** directories (referenced as module sources)
-5. Build structured discovery report
-6. Save `terraform-discovery.json` to `reports/static/<scan_id>/`
-
-**Supported layouts:**
-- Simple flat (`main.tf` at root)
-- Multi-module (`modules/network/`, `environments/dev/`)
-- Monorepo (`terraform/aws/`, `terraform/gcp/`)
-- Deeply nested environments
-
-**Evidence produced:** ✅ Terraform discovery record (all .tf files, root modules identified)
-
----
-
-## Stage 3: Scan Metadata Generation
-
-**Script:** `scripts/generate_scan_metadata.py`
+**Environment variables:** `SCAN_ID`, `REPO_URL`, `BRANCH`
 
 **Actions:**
-1. Receive `scan_id`, repository URL, branch, commit SHA, clone path
-2. Calculate SHA256 hash for every discovered `.tf` file
-3. Record scan start timestamp
-4. Assemble complete scan metadata JSON
-5. Save to `repositories/metadata/scan-<scan_id>.json`
+1. Read `REPO_URL`, `BRANCH`, and `SCAN_ID` from environment
+2. If `repositories/cloned/<SCAN_ID>/` already exists, delete it
+3. Run `git clone --depth 1 --branch <branch> <url> repositories/cloned/<SCAN_ID>/`
+4. Capture git command exit code, stdout, stderr, timestamps
 
-**Output:**
+**Output:** `repositories/metadata/<SCAN_ID>/repository-metadata.json`
 ```json
 {
-  "scan_id":        "SCAN-550e8400",
-  "repository_url": "https://github.com/org/repo",
-  "commit_sha":     "<git SHA>",
-  "scan_start_time": "<UTC timestamp>",
-  "file_hashes":    { "main.tf": "<SHA256>", ... },
-  "metadata_hash":  "<SHA256 of this file>"
+  "scan_id": "SCAN-550e8400",
+  "repo_url": "https://github.com/org/repo",
+  "branch": "main",
+  "cloned_path": "repositories/cloned/SCAN-550e8400/",
+  "clone_status": "SUCCESS",
+  "clone_started_at": "2025-01-01T12:00:00+00:00",
+  "clone_completed_at": "2025-01-01T12:00:05+00:00",
+  "git_command_exit_code": 0,
+  "stdout": "...",
+  "stderr": "..."
 }
 ```
 
-**Evidence produced:** ✅ Root anchor of forensic evidence chain — scan metadata with file hashes
+**Error handling:** If clone fails, metadata is written first, then exit code 1.
+
+**Evidence produced:** ✅ Clone metadata with timestamps and command output
 
 ---
 
-## Stage 4: Terraform Static Validation
+## Stage 2: Scan Metadata Generation (SHA256 Hashing) ✅
 
-**Trigger:** Automatic — for each identified root module.
+**Script:** `scripts/generate_scan_metadata.py`
 
-**Tool:** Terraform CLI
+**Environment variables:** `SCAN_ID`, `REPO_URL`, `BRANCH`
 
 **Actions:**
-1. For each root module directory discovered in Stage 2:
-   - `terraform fmt -check` — enforce formatting
-   - `terraform init` — initialise provider plugins in a clean environment
-   - `terraform validate` — validate HCL syntax and resource configuration
-2. Capture output, exit codes, and errors per module
-3. Attach `scan_id` and `module_path` to all results
+1. Walk `repositories/cloned/<SCAN_ID>/` recursively
+2. Find all `.tf` files (skipping `.git/`, `.terraform/`, `node_modules/`)
+3. Compute SHA256 hash for every `.tf` file
+4. Record file sizes and relative paths
+5. Save metadata with an evidence note explaining forensic significance
 
-**Evidence produced:** ✅ Terraform validation records per root module
+**Output:** `repositories/metadata/<SCAN_ID>/scan-metadata.json`
+```json
+{
+  "scan_id": "SCAN-550e8400",
+  "repo_url": "https://github.com/org/repo",
+  "branch": "main",
+  "generated_at": "2025-01-01T12:00:06+00:00",
+  "total_terraform_files": 3,
+  "terraform_files": [
+    { "relative_path": "main.tf", "sha256": "abc123...", "file_size_bytes": 1024 }
+  ],
+  "evidence_note": "All Terraform files are treated as digital evidence objects..."
+}
+```
+
+**Evidence produced:** ✅ Root anchor of forensic chain — SHA256 file hashes at scan time
+
+---
+
+## Stage 3: Terraform Discovery ✅
+
+**Script:** `scripts/discover_terraform.py`
+
+**Environment variable:** `SCAN_ID`
+
+**Actions:**
+1. Walk `repositories/cloned/<SCAN_ID>/` recursively
+2. Find all directories containing at least one `.tf` file
+3. Skip `.git/`, `.terraform/`, `node_modules/`
+4. Record each directory path, relative path, file count, and file names
+
+**Output:** `repositories/metadata/<SCAN_ID>/terraform-directories.json`
+```json
+{
+  "scan_id": "SCAN-550e8400",
+  "generated_at": "2025-01-01T12:00:07+00:00",
+  "total_directories": 3,
+  "terraform_directories": [
+    { "path": "/abs/path", "relative_path": ".", "tf_file_count": 3, "tf_files": ["main.tf", "variables.tf", "outputs.tf"] }
+  ]
+}
+```
+
+**Supported layouts:** Simple flat, multi-module, monorepo, deeply nested
+
+**Evidence produced:** ✅ Terraform directory map
+
+---
+
+## Stage 4: Terraform Validation ✅
+
+**Script:** `scripts/terraform_validate.py`
+
+**Environment variable:** `SCAN_ID`
+
+**Actions:**
+1. Load discovered directories from `repositories/metadata/<SCAN_ID>/terraform-directories.json`
+2. For each Terraform directory run:
+   - `terraform fmt -check -recursive`
+   - `terraform init -backend=false`
+   - `terraform validate`
+3. Capture per command: exit code, stdout, stderr, started_at, completed_at
+4. Calculate overall PASS/FAIL status
+
+**Output:** `reports/static/<SCAN_ID>/terraform-validation.json`
+
+**Error handling:** If no directories found or any command fails, report is written first, then exit code 1.
+
+**Evidence produced:** ✅ Per-directory validation records with command forensics
 
 ---
 

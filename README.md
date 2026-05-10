@@ -219,6 +219,46 @@ See [`docs/runtime-validation.md`](docs/runtime-validation.md) for the full expl
 
 ---
 
+## Terraform Validation Module (Implemented ✅)
+
+The Terraform validation module is the first fully implemented pipeline stage. It provides end-to-end repository cloning, file discovery, and Terraform validation with forensic metadata at every step.
+
+### How It Works
+
+1. **Input**: Provide a `repo_url` (any public GitHub repository containing Terraform) and an optional `branch` (default: `main`) via GitHub Actions `workflow_dispatch`.
+
+2. **SCAN_ID generation**: The pipeline generates a unique `SCAN-<8-char-UUID>` identifier that tags every output.
+
+3. **Repository cloning** (`clone_repository.py`): Clones the target repo into `repositories/cloned/<SCAN_ID>/` and writes `repository-metadata.json` with clone status, timestamps, stdout/stderr.
+
+4. **Terraform file hashing** (`generate_scan_metadata.py`): Walks the cloned directory, finds all `.tf` files (skipping `.git/`, `.terraform/`, `node_modules/`), computes SHA256 hashes, and writes `scan-metadata.json`.
+
+5. **Terraform directory discovery** (`discover_terraform.py`): Identifies all directories containing `.tf` files and writes `terraform-directories.json`.
+
+6. **Terraform validation** (`terraform_validate.py`): For each discovered directory, runs `terraform fmt -check -recursive`, `terraform init -backend=false`, and `terraform validate`. Captures command output, exit codes, and timestamps. Writes `terraform-validation.json` to `reports/static/<SCAN_ID>/`.
+
+### Generated Reports
+
+| File | Location |
+|---|---|
+| `repository-metadata.json` | `repositories/metadata/<SCAN_ID>/` |
+| `scan-metadata.json` | `repositories/metadata/<SCAN_ID>/` |
+| `terraform-directories.json` | `repositories/metadata/<SCAN_ID>/` |
+| `terraform-validation.json` | `reports/static/<SCAN_ID>/` |
+
+All reports are uploaded as GitHub Actions Artifacts (even if validation fails) and tagged with SCAN_ID.
+
+### Running the Workflow
+
+1. Go to **Actions** → **IaC Security Framework** → **Run workflow**
+2. Enter a public GitHub repository URL containing Terraform files
+3. Optionally set the branch (default: `main`)
+4. Click **Run workflow**
+
+The workflow also runs on push/PR to `main`, scanning the framework repository itself.
+
+---
+
 ## Folder Structure
 
 ```
@@ -237,13 +277,14 @@ iac-security-framework/
 │
 ├── scripts/
 │   ├── clone_repository.py         # Clone repo → repositories/cloned/<scan_id>/
-│   ├── generate_scan_metadata.py   # Scan ID + SHA256 hashing + metadata root anchor
-│   ├── discover_terraform.py       # Recursive .tf discovery + root module identification
-│   ├── normalize_checkov.py        # Checkov output normalization + scan_id tagging
-│   ├── normalize_prowler.py        # Prowler output normalization + scan_id tagging
-│   ├── risk_score.py               # Static risk scoring (Checkov + OPA)
-│   ├── runtime_risk_score.py       # Final risk scoring (static + runtime combined)
-│   └── forensic_log.py             # Forensic evidence package generation
+│   ├── generate_scan_metadata.py   # SHA256 hashing + scan metadata
+│   ├── discover_terraform.py       # Recursive .tf directory discovery
+│   ├── terraform_validate.py       # terraform fmt / init / validate per directory
+│   ├── normalize_checkov.py        # Checkov output normalization (placeholder)
+│   ├── normalize_prowler.py        # Prowler output normalization (placeholder)
+│   ├── risk_score.py               # Static risk scoring (placeholder)
+│   ├── runtime_risk_score.py       # Final risk scoring (placeholder)
+│   └── forensic_log.py             # Forensic evidence packaging (placeholder)
 │
 ├── reports/
 │   ├── static/<scan_id>/           # Checkov, OPA, static risk score — per scan
@@ -274,28 +315,28 @@ iac-security-framework/
 
 ## Future Roadmap
 
-### Phase 1 (Current) — Project Scaffolding ✅
+### Phase 1 — Project Scaffolding ✅
 - Initial folder and file structure
 - Placeholder files with detailed comments
 - Documentation foundation
 
-### Phase 2 — Core Script Implementation
+### Phase 2 (Current) — Terraform Validation Module ✅
 - `clone_repository.py` — Repository cloning with scan_id isolation
 - `generate_scan_metadata.py` — Scan metadata with SHA256 hashing
-- `discover_terraform.py` — Recursive Terraform discovery engine
+- `discover_terraform.py` — Recursive Terraform directory discovery
+- `terraform_validate.py` — terraform fmt/init/validate per directory
+- GitHub Actions workflow — end-to-end pipeline with artifact upload
+
+### Phase 3 — Security Scanning
 - `normalize_checkov.py` — Checkov output normalization
 - `normalize_prowler.py` — Prowler output normalization
 - `risk_score.py` — Static risk scoring engine
 - `runtime_risk_score.py` — Final combined risk scoring
 - `forensic_log.py` — Forensic evidence package generation
 
-### Phase 3 — Policy Implementation
+### Phase 4 — Policy Implementation
 - `terraform.rego` — Terraform governance policies
 - `aws-security.rego` — AWS security policies
-
-### Phase 4 — GitHub Actions Pipeline
-- Full `iac-security.yml` workflow implementation
-- End-to-end pipeline testing with real repositories
 
 ### Phase 5 — AWS Sandbox Integration
 - Sandbox AWS account configuration

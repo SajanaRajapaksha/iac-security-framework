@@ -1,109 +1,97 @@
 """
-=============================================================================
-FILE: scripts/clone_repository.py
-PURPOSE: Clone a target GitHub repository into an isolated per-scan directory
-=============================================================================
+scripts/clone_repository.py
 
-FUTURE BEHAVIOUR (to be implemented):
+Clone a GitHub repository into an isolated per-scan directory.
 
-  This script is the FIRST stage of the pipeline after scan initialisation.
-  It accepts a GitHub repository URL, generates a Scan ID, and clones the
-  repository into an isolated directory under repositories/cloned/.
+Environment variables:
+    REPO_URL  — GitHub repository URL to clone
+    BRANCH    — Branch to clone (default: main)
+    SCAN_ID   — Unique scan identifier (SCAN-<uuid>)
 
-  STEP 1 — Receive and Validate Repository URL
-    - Accept repository URL as a command-line argument or environment variable
-    - Validate that the URL is a reachable GitHub (or compatible) repository
-    - Support both HTTPS and SSH URL formats:
-        https://github.com/org/repo.git
-        git@github.com:org/repo.git
-    - Optional: accept a target branch (defaults to main or master)
-    - Optional: accept a specific commit SHA to pin the scan to a point in time
-
-  STEP 2 — Generate Scan ID
-    - Generate a globally unique Scan ID in the format: SCAN-<8-char-UUID-prefix>
-    - Example: SCAN-550e8400
-    - This Scan ID will be the primary identifier for the entire pipeline run
-    - All reports, evidence, and metadata will be grouped under this Scan ID
-
-  STEP 3 — Create Isolated Scan Directory
-    - Create: repositories/cloned/<scan_id>/
-    - This directory is the root of the cloned repository content
-    - The repository structure is preserved exactly as it exists in the remote repo
-    - No modifications are made to the cloned files
-
-  STEP 4 — Clone Repository
-    - Execute: git clone <repository_url> repositories/cloned/<scan_id>/
-    - Support shallow clones (--depth 1) for large repositories
-    - Capture:
-        - Git commit SHA (git rev-parse HEAD)
-        - Clone timestamp (UTC)
-        - Repository default branch
-    - Handle clone failures gracefully (network errors, auth errors, invalid URLs)
-
-  STEP 5 — Record Clone Metadata
-    - Pass Scan ID, repository URL, branch, commit SHA, clone path to:
-      scripts/generate_scan_metadata.py
-    - This initiates the forensic evidence chain for the current scan
-
-  EXPECTED MULTI-SCAN SUPPORT:
-    - Multiple scans can run concurrently — each in its own <scan_id>/ directory
-    - Scanning the same repository twice produces two independent, isolated scan directories
-    - Historical scans are preserved until explicitly cleaned up
-
-  EXAMPLE USAGE (future):
-    python scripts/clone_repository.py \
-        --url https://github.com/org/terraform-infra \
-        --branch main \
-        --output-scan-id-file /tmp/current_scan_id.txt
-
-DEPENDENCIES (future):
-  - Python standard library: subprocess, os, uuid, datetime, argparse, sys
-  - Git CLI: must be available in the pipeline environment
-  - No external Python packages required
-
-=============================================================================
-PLACEHOLDER — Full implementation to follow in future phases
-=============================================================================
+Output:
+    repositories/cloned/<SCAN_ID>/           — cloned repo content
+    repositories/metadata/<SCAN_ID>/repository-metadata.json — clone metadata
 """
 
-# FUTURE IMPORTS:
-# import subprocess
-# import os
-# import uuid
-# import argparse
-# from datetime import datetime, timezone
-# from pathlib import Path
+import json
+import os
+import shutil
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
-# FUTURE CONSTANTS:
-# CLONED_REPOS_DIR = "repositories/cloned"
-# SCAN_ID_PREFIX = "SCAN"
 
-# FUTURE FUNCTIONS:
-#
-# def generate_scan_id() -> str:
-#     """Generate a unique Scan ID in the format SCAN-<8-char-UUID>."""
-#     pass
-#
-# def validate_repository_url(url: str) -> bool:
-#     """Validate that the URL is a reachable Git repository."""
-#     pass
-#
-# def create_scan_directory(scan_id: str, base_dir: str) -> str:
-#     """Create the isolated directory for this scan and return its path."""
-#     pass
-#
-# def clone_repository(url: str, target_dir: str, branch: str = None, shallow: bool = True) -> dict:
-#     """
-#     Clone the repository into the target directory.
-#     Returns clone metadata: commit_sha, branch, clone_time.
-#     """
-#     pass
-#
-# def main():
-#     """Entry point — parse arguments, generate scan_id, clone repository."""
-#     pass
-#
-# if __name__ == "__main__":
-#     main()
+def utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
-print("clone_repository.py — Placeholder. Full implementation coming soon.")
+
+def run_clone(repo_url: str, branch: str, dest: str):
+    """Run git clone and return (exit_code, stdout, stderr)."""
+    cmd = ["git", "clone", "--depth", "1", "--branch", branch, repo_url, dest]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    return result.returncode, result.stdout, result.stderr
+
+
+def main():
+    scan_id = os.environ.get("SCAN_ID", "")
+    repo_url = os.environ.get("REPO_URL", "")
+    branch = os.environ.get("BRANCH", "main")
+
+    if not scan_id:
+        print("ERROR: SCAN_ID environment variable is required.", file=sys.stderr)
+        sys.exit(1)
+    if not repo_url:
+        print("ERROR: REPO_URL environment variable is required.", file=sys.stderr)
+        sys.exit(1)
+
+    clone_dest = os.path.join("repositories", "cloned", scan_id)
+    metadata_dir = os.path.join("repositories", "metadata", scan_id)
+    metadata_file = os.path.join(metadata_dir, "repository-metadata.json")
+
+    # If destination already exists, remove it
+    if os.path.exists(clone_dest):
+        shutil.rmtree(clone_dest)
+
+    os.makedirs(metadata_dir, exist_ok=True)
+
+    print(f"[clone_repository] SCAN_ID   = {scan_id}")
+    print(f"[clone_repository] REPO_URL  = {repo_url}")
+    print(f"[clone_repository] BRANCH    = {branch}")
+    print(f"[clone_repository] DEST      = {clone_dest}")
+
+    clone_started_at = utcnow_iso()
+    exit_code, stdout, stderr = run_clone(repo_url, branch, clone_dest)
+    clone_completed_at = utcnow_iso()
+
+    clone_status = "SUCCESS" if exit_code == 0 else "FAILED"
+
+    metadata = {
+        "scan_id": scan_id,
+        "repo_url": repo_url,
+        "branch": branch,
+        "cloned_path": clone_dest,
+        "clone_status": clone_status,
+        "clone_started_at": clone_started_at,
+        "clone_completed_at": clone_completed_at,
+        "git_command_exit_code": exit_code,
+        "stdout": stdout,
+        "stderr": stderr,
+    }
+
+    with open(metadata_file, "w") as f:
+        json.dump(metadata, f, indent=2)
+
+    print(f"[clone_repository] Status    = {clone_status}")
+    print(f"[clone_repository] Metadata  = {metadata_file}")
+
+    if exit_code != 0:
+        print(f"[clone_repository] Clone FAILED (exit {exit_code})", file=sys.stderr)
+        print(stderr, file=sys.stderr)
+        sys.exit(1)
+
+    print("[clone_repository] Clone completed successfully.")
+
+
+if __name__ == "__main__":
+    main()

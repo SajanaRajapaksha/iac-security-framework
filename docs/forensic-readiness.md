@@ -14,120 +14,147 @@ In the context of this framework, forensic readiness means that **every Terrafor
 
 ## 2. Core Forensic Readiness Principles Applied
 
-### 2.1 Every Terraform Upload is a Digital Evidence Object
+### 2.1 Every Scanned Repository is a Digital Evidence Object
 
-When a Terraform template is uploaded to the pipeline, it is immediately registered as a **digital evidence object**. This means:
+When a GitHub repository URL is submitted for scanning, the cloned Terraform content is immediately registered as a **digital evidence object**. This means:
 
-- The upload is given a globally unique, immutable **Upload ID**
-- The exact byte-level content of each file is captured using SHA256 hashing
+- The scan is given a globally unique, immutable **Scan ID** (`SCAN-<UUID-prefix>`)
+- The exact byte-level content of each `.tf` file is captured using SHA256 hashing at clone time
 - A timestamped, structured metadata record is created before any modification or processing occurs
-- The upload can never be "forgotten" — it has a permanent record from the moment it entered the pipeline
+- The scan can never be "forgotten" — it has a permanent record from the moment the repository was cloned
 
 This mirrors the evidence intake procedures in digital forensics, where physical evidence is logged with a chain-of-custody record immediately upon collection.
 
-### 2.2 Every Upload Receives a Unique Upload ID
+### 2.2 Every Scan Receives a Unique SCAN_ID
 
-Every Terraform upload receives a globally unique identifier:
+Every repository scan receives a globally unique identifier:
 
 ```
-TF-UPLOAD-<UUID>
+SCAN-<8-character-UUID-prefix>
+Example: SCAN-550e8400
 ```
 
-This Upload ID is the **primary key** that links every artifact across the entire pipeline. It is attached to:
+This Scan ID is the **primary key** that links every artifact across the entire pipeline. It is attached to:
 
 | Artifact | Purpose |
 |---|---|
-| Upload metadata | Root anchor of the evidence chain |
-| Terraform file hashes | Prove file integrity at upload time |
-| Checkov findings | Link finding to the specific upload |
-| OPA policy violations | Link policy breach to the specific upload |
-| Deployment metadata | Link deployed resources to the specific upload |
-| Prowler runtime findings | Link runtime issues to the specific upload |
-| Risk score reports | Link decision to the specific upload |
+| Repository clone metadata | Root anchor of the evidence chain |
+| Terraform file hashes | Prove file integrity at clone time |
+| Terraform validation results | Link validation commands to the specific scan |
+| Checkov findings | Link finding to the specific scan |
+| OPA policy violations | Link policy breach to the specific scan |
+| Deployment metadata | Link deployed resources to the specific scan |
+| Prowler runtime findings | Link runtime issues to the specific scan |
+| Risk score reports | Link decision to the specific scan |
 | Forensic evidence package | Complete, linked evidence record |
 
-No two uploads can share an Upload ID. Once generated, it is immutable.
+No two scans can share a Scan ID. Once generated, it is immutable.
 
 ### 2.3 Every Stage Contributes Metadata
 
 Forensic readiness requires that **no stage of the pipeline is invisible**. Each stage must produce a structured, timestamped record that becomes part of the evidence chain.
 
-| Stage | Metadata Produced |
-|---|---|
-| Upload Intake | upload_id, timestamps, file hashes, uploader identity |
-| Terraform Validation | Command results, exit codes, error messages |
-| Checkov Scanning | Finding details, check IDs, resource names, severity |
-| Policy Validation | Violated rules, rule descriptions, affected resources |
-| Initial Risk Score | Score calculation, risk band, decision |
-| Sandbox Deployment | Resource ARNs, deployed state, deployment time |
-| Runtime Validation | Live findings, resource states, AWS account details |
-| Final Risk Score | Combined score, trust score, final decision |
-| Evidence Generation | Evidence package, integrity hash, evidence_id |
+| Stage | Metadata Produced | Status |
+|---|---|---|
+| Repository Cloning | scan_id, repo_url, branch, clone timestamps, stdout/stderr | ✅ Implemented |
+| Scan Metadata | SHA256 file hashes, file sizes, file paths, evidence note | ✅ Implemented |
+| Terraform Discovery | directory paths, .tf file counts per directory | ✅ Implemented |
+| Terraform Validation | command, exit code, stdout, stderr, started_at, completed_at per fmt/init/validate | ✅ Implemented |
+| Checkov Scanning | Finding details, check IDs, resource names, severity | 🔮 Planned |
+| Policy Validation | Violated rules, rule descriptions, affected resources | 🔮 Planned |
+| Initial Risk Score | Score calculation, risk band, decision | 🔮 Planned |
+| Sandbox Deployment | Resource ARNs, deployed state, deployment time | 🔮 Planned |
+| Runtime Validation | Live findings, resource states, AWS account details | 🔮 Planned |
+| Final Risk Score | Combined score, trust score, final decision | 🔮 Planned |
+| Evidence Generation | Evidence package, integrity hash, evidence_id | 🔮 Planned |
 
-Together, these records form a **complete audit trail** for every deployment attempt.
+Together, these records form a **complete audit trail** for every scan.
 
 ### 2.4 SHA256 Hashes Preserve Integrity
 
 Cryptographic hashing is the foundation of digital evidence integrity. This framework uses **SHA256** hashing at multiple points:
 
-- **File Hashing (Upload Time):** Every `.tf` file is hashed at upload. If any file is modified after upload, the hash will not match, revealing tampering.
-- **Metadata Hashing:** The upload metadata JSON is itself hashed, ensuring the metadata record cannot be silently altered.
-- **Evidence Package Hashing:** The complete forensic evidence package is hashed on creation. Any post-generation modification to the evidence file will produce a different hash.
+- **File Hashing (Clone Time):** Every `.tf` file is hashed immediately after cloning via `generate_scan_metadata.py`. If any file is modified after cloning, the hash will not match, revealing tampering. This is implemented and operational.
+- **Evidence Package Hashing (future):** The complete forensic evidence package will be hashed on creation. Any post-generation modification to the evidence file will produce a different hash.
 
 SHA256 is a one-way, collision-resistant cryptographic function widely accepted in digital forensics for demonstrating file integrity.
 
-### 2.5 Evidence Chain Links Upload to Deployment Decision
+### 2.5 Evidence Chain Links Repository to Deployment Decision
 
-The forensic evidence chain connects every stage:
+The forensic evidence chain connects every stage via SCAN_ID:
 
 ```
-Upload
-  │ (upload_id)
+Repository URL + Branch
+  │ (SCAN_ID)
   ▼
-SHA256 File Hashes
-  │ (upload_id)
+Clone Metadata (timestamp, stdout/stderr)   ← ✅ Implemented
+  │ (SCAN_ID)
   ▼
-Terraform Validation Result
-  │ (upload_id)
+SHA256 File Hashes (.tf files)               ← ✅ Implemented
+  │ (SCAN_ID)
   ▼
-Checkov Findings
-  │ (upload_id)
+Terraform Directory Discovery                ← ✅ Implemented
+  │ (SCAN_ID)
   ▼
-OPA Policy Violations
-  │ (upload_id)
+Terraform Validation (fmt/init/validate)     ← ✅ Implemented
+  │ (SCAN_ID)
   ▼
-Initial Risk Score
-  │ (upload_id)
+Checkov Findings                             ← 🔮 Planned
+  │ (SCAN_ID)
   ▼
-Deployment Metadata
-  │ (upload_id)
+OPA Policy Violations                        ← 🔮 Planned
+  │ (SCAN_ID)
   ▼
-Prowler Runtime Findings
-  │ (upload_id)
+Initial Risk Score                           ← 🔮 Planned
+  │ (SCAN_ID)
   ▼
-Final Risk Score & Decision
-  │ (upload_id + evidence_id)
+Deployment Metadata                          ← 🔮 Planned
+  │ (SCAN_ID)
   ▼
-Forensic Evidence Package (SHA256 sealed)
+Prowler Runtime Findings                     ← 🔮 Planned
+  │ (SCAN_ID)
+  ▼
+Final Risk Score & Decision                  ← 🔮 Planned
+  │ (SCAN_ID + evidence_id)
+  ▼
+Forensic Evidence Package (SHA256 sealed)    ← 🔮 Planned
 ```
 
 Every node in this chain is independently verifiable. A forensic investigator can begin at any point and trace both forwards and backwards through the complete pipeline history.
 
-### 2.6 Investigation and Auditability Support
+### 2.6 Timestamps Support Investigation Timeline Reconstruction
+
+All implemented scripts capture precise UTC timestamps using ISO 8601 format:
+
+- `clone_started_at` / `clone_completed_at` — when the repository was cloned
+- `generated_at` — when scan metadata and discovery reports were created
+- `started_at` / `completed_at` — when each Terraform command (fmt/init/validate) ran
+
+These timestamps allow investigators to reconstruct the exact timeline of a scan, identify latency issues, and correlate scan events with external activities.
+
+### 2.7 Command Outputs Preserve Validation Evidence
+
+Every Terraform CLI command executed during validation captures:
+- The full **command string** that was run
+- **stdout** — standard output (successful messages, plan output)
+- **stderr** — error output (warnings, errors, diagnostic messages)
+- **exit code** — numeric result (0 = success, non-zero = failure)
+
+This forensic-grade command logging means that even if a repository is modified after scanning, the framework retains an exact record of what Terraform reported at scan time.
+
+### 2.8 Investigation and Auditability Support
 
 The framework is designed to answer the following investigative questions:
 
 | Question | Evidence Source |
 |---|---|
-| Who uploaded this Terraform template? | `upload_metadata.json` → `uploaded_by` |
-| What was the exact content at upload time? | `upload_metadata.json` → `file_hashes` |
-| What security issues were detected? | `normalized-findings.json`, `policy-results.json` |
-| Was the deployment decision appropriate? | `static-risk-score.json` |
-| What was deployed to AWS? | `deployment_metadata` in evidence package |
-| What did Prowler find at runtime? | `normalized-runtime-findings.json` |
-| Was there infrastructure drift? | `runtime_risk_score.py` drift detection |
-| What was the final trust assessment? | `final-risk-score.json` |
-| Has the evidence been tampered with? | `evidence_hash` in `evidence-<id>.json` |
+| What repository was scanned? | `repository-metadata.json` → `repo_url`, `branch` |
+| What was the exact content at scan time? | `scan-metadata.json` → `terraform_files[].sha256` |
+| What Terraform directories were found? | `terraform-directories.json` |
+| Did the Terraform code pass validation? | `terraform-validation.json` → `overall_status` |
+| What specific validation errors occurred? | `terraform-validation.json` → `directories[].validate.stderr` |
+| What security issues were detected? | `normalized-findings.json`, `policy-results.json` (planned) |
+| Has the evidence been tampered with? | `evidence_hash` in `evidence-<id>.json` (planned) |
 
 ---
 
@@ -138,7 +165,7 @@ Each pipeline run produces a single sealed forensic evidence package:
 ```json
 {
   "evidence_id":          "EV-<UUID>",
-  "upload_id":            "TF-UPLOAD-<UUID>",
+  "scan_id":              "SCAN-<UUID-prefix>",
   "generated_at":         "<UTC ISO 8601 timestamp>",
   "pipeline_run_id":      "<GitHub Actions run ID>",
   "upload_metadata":      { ... },
@@ -171,4 +198,4 @@ This framework's forensic readiness approach aligns with:
 - **NIST SP 800-86** — Guide to integrating forensic techniques into incident response
 - **UK ACPO Good Practice Guide** — Digital forensic principles (particularly the non-alteration principle)
 
-The SHA256 hashing at upload time fulfils the requirement that evidence must be **collected without alteration**, while the immutable `upload_id` satisfies the requirement for a **unique identifier** for each piece of evidence.
+The SHA256 hashing at clone time fulfils the requirement that evidence must be **collected without alteration**, while the immutable `SCAN_ID` satisfies the requirement for a **unique identifier** for each piece of evidence.

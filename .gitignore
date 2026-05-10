@@ -13,7 +13,8 @@ repositories/cloned/*
 # Preserve the directory structure via .gitkeep
 !repositories/cloned/.gitkeep
 
-# Exclude scan metadata JSON files
+# Exclude per-scan metadata subdirectories and their JSON files
+repositories/metadata/SCAN-*/
 repositories/metadata/*.json
 
 # Preserve the metadata directory
@@ -166,16 +167,7 @@ runtime-validation/sandbox/*.tfstate.*
 !runtime-validation/prowler/.gitkeep
 !runtime-validation/sandbox/.gitkeep
 
-# =============================================================================
-# TERRAFORM UPLOADS (user-uploaded files — handled by upload system)
-# =============================================================================
 
-# Do not commit user-uploaded Terraform files to the main repo
-# These are managed by the upload system per Upload ID
-terraform/uploads/*/
-
-# Preserve the uploads directory itself
-!terraform/uploads/.gitkeep
 
 # =============================================================================
 # OPERATING SYSTEM FILES

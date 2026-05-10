@@ -56,12 +56,14 @@ The Scan ID creates a dedicated namespace for every artifact produced by the sca
 
 | Artifact Category | Path |
 |---|---|
-| Cloned repository | `repositories/cloned/<scan_id>/` |
-| Scan metadata | `repositories/metadata/scan-<scan_id>.json` |
-| Static reports | `reports/static/<scan_id>/` |
-| Runtime reports | `reports/runtime/<scan_id>/` |
-| Final reports | `reports/final/<scan_id>/` |
-| Forensic evidence | `evidence/<scan_id>/` |
+| Cloned repository | `repositories/cloned/<SCAN_ID>/` |
+| Repository metadata | `repositories/metadata/<SCAN_ID>/repository-metadata.json` |
+| Scan metadata (hashes) | `repositories/metadata/<SCAN_ID>/scan-metadata.json` |
+| Terraform discovery | `repositories/metadata/<SCAN_ID>/terraform-directories.json` |
+| Static reports | `reports/static/<SCAN_ID>/` |
+| Runtime reports | `reports/runtime/<SCAN_ID>/` (planned) |
+| Final reports | `reports/final/<SCAN_ID>/` (planned) |
+| Forensic evidence | `evidence/<SCAN_ID>/` (planned) |
 
 ### 3.3 Multi-Scan Support
 
@@ -86,7 +88,7 @@ This is non-trivial because:
 - Some directories are child modules, called by parent modules
 - Some repositories mix Terraform with other code
 
-### 4.2 Discovery Algorithm (Planned — `discover_terraform.py`)
+### 4.2 Discovery Algorithm (✅ Implemented — `discover_terraform.py`)
 
 **Step 1 — Find all `.tf` files:**
 ```
@@ -168,28 +170,27 @@ infra/
 ### 4.4 Discovery Output
 
 `discover_terraform.py` produces a structured discovery report saved to:
-`reports/static/<scan_id>/terraform-discovery.json`
+`repositories/metadata/<SCAN_ID>/terraform-directories.json`
 
 ```json
 {
-  "scan_id":            "SCAN-550e8400",
-  "repository_url":     "https://github.com/org/repo",
-  "clone_dir":          "repositories/cloned/SCAN-550e8400/",
-  "discovery_time":     "2025-01-01T12:00:00Z",
-  "all_tf_files": [
-    "main.tf",
-    "modules/network/main.tf",
-    "environments/dev/main.tf"
-  ],
-  "root_modules": [
-    { "path": ".",                  "tf_file_count": 3 },
-    { "path": "environments/dev",   "tf_file_count": 2 }
-  ],
-  "child_modules": [
-    { "path": "modules/network",    "tf_file_count": 2 }
-  ],
-  "total_tf_files":     5,
-  "total_root_modules": 2
+  "scan_id":              "SCAN-550e8400",
+  "generated_at":         "2025-01-01T12:00:00+00:00",
+  "total_directories":    3,
+  "terraform_directories": [
+    {
+      "path": "/abs/path/to/root",
+      "relative_path": ".",
+      "tf_file_count": 3,
+      "tf_files": ["main.tf", "outputs.tf", "variables.tf"]
+    },
+    {
+      "path": "/abs/path/to/environments/dev",
+      "relative_path": "environments/dev",
+      "tf_file_count": 2,
+      "tf_files": ["main.tf", "variables.tf"]
+    }
+  ]
 }
 ```
 
@@ -225,7 +226,7 @@ All findings are tagged with both the `scan_id` and the relative module path:
 
 ## 6. Repository Cloning Details
 
-### 6.1 Clone Command (Planned)
+### 6.1 Clone Command (✅ Implemented)
 
 ```bash
 git clone --depth 1 \
@@ -242,8 +243,8 @@ git clone --depth 1 \
 
 | Repository Type | Support Status |
 |---|---|
-| Public GitHub repositories | ✅ Planned |
-| Private GitHub repositories (with token) | ✅ Planned |
+| Public GitHub repositories | ✅ Implemented |
+| Private GitHub repositories (with token) | 🔮 Future |
 | GitHub Enterprise | 🔮 Future |
 | GitLab repositories | 🔮 Future |
 | Bitbucket repositories | 🔮 Future |
