@@ -121,9 +121,11 @@ Trivy normalisation
         ↓
 Combined static analysis evidence report
         ↓
-Enforcement decision (PASS / FAIL based on severity thresholds)
+Prepare policy validation input (non-blocking handoff)
         ↓
 Upload all reports as GitHub Actions Artifacts
+        ↓
+Continue to policy validation (not yet implemented)
 ```
 
 See [`docs/workflow.md`](docs/workflow.md) for the detailed stage-by-stage workflow.
@@ -265,15 +267,38 @@ After both scanners complete, a combined forensic evidence report aggregates all
 
 ---
 
-## Enforcement Decision (Implemented ✅)
+## Non-Blocking Static Analysis Design (Implemented ✅)
 
-The pipeline makes an enforcement decision **after all evidence is generated**:
+Static analysis is an **evidence-collection and risk-classification stage**, not an enforcement gate. The pipeline continues regardless of findings.
 
-- **Path**: `reports/static/<SCAN_ID>/combined/enforcement-decision.json`
-- **Default**: Fails if any HIGH or CRITICAL finding exists.
-- **Configurable**: Set `SECURITY_FAIL_ON_SEVERITIES=HIGH,CRITICAL` environment variable.
-- MEDIUM and LOW are recorded but do not fail by default.
-- The enforcement script always writes the decision report before exiting.
+### Key Behaviour
+
+- Checkov and Trivy findings are collected and preserved.
+- HIGH and CRITICAL findings are classified and recorded.
+- The pipeline **does not stop** because of security findings.
+- A `policy-validation-input.json` file is generated for the future policy validation model.
+- A `static-analysis-handoff.json` records that static analysis completed and handed off findings.
+- The `enforce_static_policy.py` script is retained for future optional blocking mode but is **not called** in the current workflow.
+
+### Risk Classification
+
+| Condition | `static_risk_status` | `pipeline_action` | Exit Code |
+|---|---|---|---|
+| HIGH or CRITICAL findings present | `HIGH_RISK_FINDINGS_DETECTED` | `CONTINUE_TO_POLICY_VALIDATION` | 0 |
+| No HIGH or CRITICAL findings | `NO_HIGH_RISK_FINDINGS` | `CONTINUE_TO_POLICY_VALIDATION` | 0 |
+| Evidence file missing | `EVIDENCE_MISSING` | `CONTINUE` | 0 |
+| Missing SCAN_ID | — | — | 1 |
+
+### Policy Validation Handoff
+
+The `policy-validation-input.json` file contains:
+- All normalised findings from Checkov and Trivy
+- Severity summary and risk classification
+- `policy_validation_status: "PENDING"` on every finding
+- `policy_validation_implemented: false` flag
+- Forensic metadata (SCAN_ID, timestamps, repository context)
+
+The future policy validation model will consume this file.
 
 ---
 
@@ -284,14 +309,15 @@ reports/static/<SCAN_ID>/
 ├── terraform-validation/
 │   └── terraform-validation.json
 ├── checkov/
-│   ├── checkov-results.json          (raw Checkov output)
-│   └── checkov-evidence.json         (normalized + enriched findings)
+│   ├── checkov-results.json              (raw Checkov output)
+│   └── checkov-evidence.json             (normalized + enriched findings)
 ├── trivy/
-│   ├── trivy-results.json            (raw Trivy output)
-│   └── trivy-evidence.json           (normalized findings)
+│   ├── trivy-results.json                (raw Trivy output)
+│   └── trivy-evidence.json               (normalized findings)
 └── combined/
-    ├── static-analysis-evidence.json (combined forensic report)
-    └── enforcement-decision.json     (PASS / FAIL decision)
+    ├── static-analysis-evidence.json     (combined forensic report)
+    ├── policy-validation-input.json      (input for future policy model)
+    └── static-analysis-handoff.json      (stage transition record)
 ```
 
 ---
@@ -321,7 +347,7 @@ python scripts/terraform_validate.py
 python scripts/checkov_scan.py
 python scripts/trivy_scan.py
 python scripts/static_analysis_report.py
-python scripts/enforce_static_policy.py
+python scripts/prepare_policy_validation_input.py
 ```
 
 ### Running via GitHub Actions
@@ -363,7 +389,8 @@ iac-security-framework/
 │   ├── checkov_scan.py                 # Checkov scan + normalisation ✅
 │   ├── trivy_scan.py                   # Trivy config scan + normalisation ✅
 │   ├── static_analysis_report.py       # Combined evidence report ✅
-│   ├── enforce_static_policy.py        # Enforcement decision ✅
+│   ├── prepare_policy_validation_input.py  # Policy handoff (non-blocking) ✅
+│   ├── enforce_static_policy.py        # Enforcement decision (future blocking mode)
 │   ├── normalize_checkov.py            # Legacy normaliser (superseded)
 │   ├── checkov_forensic_summary.py     # Legacy summary (superseded)
 │   ├── normalize_prowler.py            # Prowler normalisation (placeholder)
@@ -401,7 +428,7 @@ iac-security-framework/
 - `terraform_validate.py` — terraform fmt/init/validate per directory
 - GitHub Actions workflow — end-to-end pipeline with artifact upload
 
-### Phase 3 (Current) — Static Analysis Pipeline ✅
+### Phase 3 — Static Analysis Pipeline ✅
 - **Checkov** as primary scanner with local severity mapping enrichment
 - **Trivy config** as secondary scanner
 - `config/severity_mapping.json` — local Checkov severity mapping
@@ -409,12 +436,14 @@ iac-security-framework/
 - `scripts/checkov_scan.py` — Checkov scan + normalisation + evidence
 - `scripts/trivy_scan.py` — Trivy scan + normalisation + evidence
 - `scripts/static_analysis_report.py` — combined forensic evidence report
-- `scripts/enforce_static_policy.py` — configurable enforcement decision
-- Updated GitHub Actions workflow with full scanner integration
+- `scripts/prepare_policy_validation_input.py` — non-blocking policy handoff
+- Non-blocking pipeline design — findings preserved, pipeline continues
 
-### Phase 4 — Policy Implementation
+### Phase 4 (Next) — Policy Validation Model
+- Policy validation model consuming `policy-validation-input.json`
 - `terraform.rego` — Terraform governance policies
 - `aws-security.rego` — AWS security policies
+- Final enforcement decision (allow / deny / review)
 
 ### Phase 5 — AWS Sandbox Integration
 - Sandbox AWS account configuration

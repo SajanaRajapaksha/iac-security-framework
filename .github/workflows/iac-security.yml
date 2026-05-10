@@ -4,7 +4,9 @@
 # Accepts a GitHub repository URL, clones it, discovers Terraform directories,
 # runs terraform fmt/init/validate, executes Checkov + Trivy static scanning,
 # normalizes findings with local severity mapping, generates combined forensic
-# evidence reports, and performs enforcement before uploading all artifacts.
+# evidence reports, and prepares handoff input for the future policy validation
+# model.  Static analysis is NON-BLOCKING — findings are preserved as evidence
+# but do not stop the pipeline.
 #
 # Every step is traceable via SCAN_ID.
 # =============================================================================
@@ -166,7 +168,15 @@ jobs:
         run: python scripts/static_analysis_report.py
 
       # ================================================================
-      # STAGE 8: ARTIFACT UPLOAD (always — even on failure)
+      # STAGE 8: PREPARE POLICY VALIDATION INPUT (non-blocking)
+      # ================================================================
+
+      - name: "Stage 8: Prepare policy validation input"
+        if: steps.terraform_validation.outcome == 'success'
+        run: python scripts/prepare_policy_validation_input.py
+
+      # ================================================================
+      # ARTIFACT UPLOAD (always — even on failure)
       # ================================================================
 
       - name: Upload scan metadata artifacts
@@ -183,17 +193,11 @@ jobs:
           name: static-reports-${{ steps.scan.outputs.scan_id }}
           path: reports/static/${{ steps.scan.outputs.scan_id }}/
 
-      # ================================================================
-      # STAGE 9: ENFORCEMENT DECISION (must run after artifact upload)
-      # ================================================================
-
-      - name: "Stage 9: Enforce static analysis policy"
-        if: steps.terraform_validation.outcome == 'success'
-        run: python scripts/enforce_static_policy.py
-
       # ---- Future stages (not yet implemented) ----
+      # - Policy validation model (will consume policy-validation-input.json)
       # - OPA/Rego policy validation
       # - Risk scoring
       # - AWS sandbox deployment
       # - Prowler runtime validation
       # - Forensic evidence package generation
+
