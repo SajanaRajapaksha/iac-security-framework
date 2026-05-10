@@ -11,7 +11,7 @@ Input:
     repositories/metadata/<SCAN_ID>/terraform-directories.json
 
 Output:
-    reports/static/<SCAN_ID>/terraform-validation.json
+    reports/static/<SCAN_ID>/terraform-validation/terraform-validation.json
 """
 
 import json
@@ -61,7 +61,7 @@ def main():
         sys.exit(1)
 
     discovery_file = os.path.join("repositories", "metadata", scan_id, "terraform-directories.json")
-    report_dir = os.path.join("reports", "static", scan_id)
+    report_dir = os.path.join("reports", "static", scan_id, "terraform-validation")
     report_file = os.path.join(report_dir, "terraform-validation.json")
 
     os.makedirs(report_dir, exist_ok=True)

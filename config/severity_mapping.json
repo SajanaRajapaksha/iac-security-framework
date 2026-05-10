@@ -1,0 +1,122 @@
+{
+  "_comment": "Local Checkov severity mapping — used to enrich Checkov findings when native severity is null. Priority: native Checkov severity > this mapping > UNKNOWN.",
+  "_risk_model": {
+    "CRITICAL": "Direct exposure that can immediately cause full compromise or major sensitive data exposure.",
+    "HIGH": "Public exposure, weak access control, missing protection on sensitive cloud resources, public administrative access, or insecure storage public access.",
+    "MEDIUM": "Security weakness that increases attack impact, reduces resilience, weakens monitoring, or weakens forensic visibility.",
+    "LOW": "Hygiene, governance, lifecycle, unused resource, or non-immediate operational risk.",
+    "UNKNOWN": "No mapping exists."
+  },
+  "CKV_AWS_24": {
+    "severity": "HIGH",
+    "category": "networking",
+    "check_name": "Ensure no security group allows ingress from 0.0.0.0/0 to port 22 (SSH)",
+    "reason": "Public SSH access allows brute-force and lateral movement attacks on cloud workloads.",
+    "enforcement": "FAIL"
+  },
+  "CKV_AWS_260": {
+    "severity": "MEDIUM",
+    "category": "networking",
+    "check_name": "Ensure no security group allows ingress from 0.0.0.0/0 to port 80 (HTTP)",
+    "reason": "Open HTTP exposes services to the public internet without encrypted transport.",
+    "enforcement": "WARN"
+  },
+  "CKV_AWS_382": {
+    "severity": "MEDIUM",
+    "category": "networking",
+    "check_name": "Ensure no security group allows unrestricted ingress to uncommon ports",
+    "reason": "Unrestricted ingress to uncommon ports widens the attack surface.",
+    "enforcement": "WARN"
+  },
+  "CKV_AWS_56": {
+    "severity": "HIGH",
+    "category": "storage_public_access",
+    "check_name": "Ensure S3 bucket has 'restrict_public_buckets' enabled",
+    "reason": "Missing public bucket restriction can expose sensitive data to the internet.",
+    "enforcement": "FAIL"
+  },
+  "CKV_AWS_53": {
+    "severity": "HIGH",
+    "category": "storage_public_access",
+    "check_name": "Ensure S3 bucket has 'block_public_acls' enabled",
+    "reason": "Without blocking public ACLs, objects may be inadvertently exposed.",
+    "enforcement": "FAIL"
+  },
+  "CKV_AWS_54": {
+    "severity": "HIGH",
+    "category": "storage_public_access",
+    "check_name": "Ensure S3 bucket has 'block_public_policy' enabled",
+    "reason": "Public bucket policies can grant unrestricted access to all objects.",
+    "enforcement": "FAIL"
+  },
+  "CKV_AWS_55": {
+    "severity": "MEDIUM",
+    "category": "storage_public_access",
+    "check_name": "Ensure S3 bucket has 'ignore_public_acls' enabled",
+    "reason": "Ignoring public ACLs adds defence-in-depth against accidental exposure.",
+    "enforcement": "WARN"
+  },
+  "CKV2_AWS_5": {
+    "severity": "LOW",
+    "category": "resource_management",
+    "check_name": "Ensure that Security Groups are attached to resources",
+    "reason": "Unattached security groups are governance overhead with no immediate security risk.",
+    "enforcement": "INFO"
+  },
+  "CKV2_AWS_62": {
+    "severity": "LOW",
+    "category": "logging_monitoring",
+    "check_name": "Ensure S3 bucket has event notifications enabled",
+    "reason": "Event notifications improve monitoring but are not a direct security control.",
+    "enforcement": "INFO"
+  },
+  "CKV2_AWS_61": {
+    "severity": "LOW",
+    "category": "resilience_backup",
+    "check_name": "Ensure S3 bucket has lifecycle configuration enabled",
+    "reason": "Lifecycle policies affect cost and governance, not immediate security posture.",
+    "enforcement": "INFO"
+  },
+  "CKV_AWS_144": {
+    "severity": "MEDIUM",
+    "category": "resilience_backup",
+    "check_name": "Ensure S3 bucket has cross-region replication enabled",
+    "reason": "Cross-region replication improves resilience against regional outages.",
+    "enforcement": "WARN"
+  },
+  "CKV_AWS_21": {
+    "severity": "MEDIUM",
+    "category": "resilience_backup",
+    "check_name": "Ensure S3 bucket has versioning enabled",
+    "reason": "Versioning enables recovery from accidental deletion or ransomware attacks.",
+    "enforcement": "WARN"
+  },
+  "CKV_AWS_18": {
+    "severity": "MEDIUM",
+    "category": "logging_monitoring",
+    "check_name": "Ensure S3 bucket has access logging enabled",
+    "reason": "Access logging is critical for forensic investigation and audit compliance.",
+    "enforcement": "WARN"
+  },
+  "CKV2_AWS_6": {
+    "severity": "HIGH",
+    "category": "storage_public_access",
+    "check_name": "Ensure S3 bucket has a public access block configuration",
+    "reason": "Without a public access block, the bucket is vulnerable to public exposure.",
+    "enforcement": "FAIL"
+  },
+  "CKV_AWS_145": {
+    "severity": "HIGH",
+    "category": "encryption",
+    "check_name": "Ensure S3 bucket is encrypted with KMS",
+    "reason": "KMS encryption provides stronger key management for sensitive data at rest.",
+    "enforcement": "FAIL"
+  },
+  "CKV_AWS_19": {
+    "severity": "MEDIUM",
+    "category": "encryption",
+    "check_name": "Ensure S3 bucket has server-side encryption enabled",
+    "reason": "Server-side encryption protects data at rest from unauthorized physical access.",
+    "enforcement": "WARN"
+  }
+}
