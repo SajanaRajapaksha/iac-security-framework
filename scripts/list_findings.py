@@ -21,17 +21,22 @@ def main():
     scan_id = sys.argv[1]
     
     # Path to the combined static analysis evidence
-    report_path = os.path.join("reports", "static", scan_id, "static-analysis-evidence.json")
+    report_path = os.path.join("reports", "static", scan_id, "combined", "static-analysis-evidence.json")
     
     # Fallback to the old directory structure if needed
     if not os.path.exists(report_path):
-        report_path = os.path.join("reports", "static_analysis", scan_id, "static-analysis-evidence.json")
+        report_path = os.path.join("reports", "static_analysis", scan_id, "combined", "static-analysis-evidence.json")
         
     if not os.path.exists(report_path):
-        print(f"Error: Combined evidence report not found for SCAN_ID '{scan_id}'.")
-        print(f"Expected path: {report_path}")
-        print("Please ensure the static analysis stages have run completely.")
-        sys.exit(1)
+        # Additional fallback just in case
+        report_path_alt = os.path.join("reports", "static", scan_id, "static-analysis-evidence.json")
+        if os.path.exists(report_path_alt):
+            report_path = report_path_alt
+        else:
+            print(f"Error: Combined evidence report not found for SCAN_ID '{scan_id}'.")
+            print(f"Expected path: {report_path}")
+            print("Please ensure the static analysis stages have run completely.")
+            sys.exit(1)
 
     with open(report_path, "r") as f:
         data = json.load(f)
