@@ -1,0 +1,183 @@
+{
+  "scan_id": "dummy-scan",
+  "stage": "policy_as_code",
+  "input_mode": "SOURCE",
+  "toolchain": {
+    "policy_engine": "Open Policy Agent",
+    "policy_language": "Rego",
+    "runner": "Conftest",
+    "conftest_version": "unknown"
+  },
+  "execution_context": {
+    "live_cloud_access_required": false,
+    "terraform_plan_required": false,
+    "terraform_backend_access_required": false,
+    "aws_credentials_required": false
+  },
+  "enforcement": {
+    "mode": "ADVISORY",
+    "pipeline_blocked": false,
+    "exit_code": 0,
+    "reason": "Tool error occurred. Pipeline continues (advisory mode)."
+  },
+  "started_at": "2026-05-10T16:11:44.045530+00:00",
+  "completed_at": "2026-05-10T16:11:44.052241+00:00",
+  "status": "ERROR",
+  "decision": "ERROR",
+  "github_metadata": {
+    "repo_url": null,
+    "branch": null,
+    "commit_sha": null,
+    "github_run_id": null
+  },
+  "inputs": {
+    "cloned_repository_path": "repositories/cloned/dummy-scan",
+    "policy_metadata": "policies/terraform/policy-metadata.json",
+    "policy_metadata_sha256": "990b774aabf750898a1e624e435346ca45b4d42f0f76517176031dd39a414158",
+    "runtime_policy_directory": "reports/policy/dummy-scan/runtime-policies",
+    "terraform_source_files": [
+      {
+        "path": "repositories/cloned/dummy-scan/main.tf",
+        "sha256": "714c2088ce7f9c18ff302042afb01d0ea0c836d97ac34451288ae42177545c9b"
+      }
+    ],
+    "terraform_source_file_count": 1
+  },
+  "policy_snapshot": [
+    {
+      "policy_id": "CUSTOM_AWS_001",
+      "name": "Block public SSH ingress",
+      "version": 1,
+      "severity": "HIGH",
+      "action": "DENY",
+      "enabled": true,
+      "source_file": "policies/terraform/aws_security.rego",
+      "runtime_file": "reports/policy/dummy-scan/runtime-policies/aws_security.rego",
+      "sha256": "eeb98b6e71acbac5a82e1d85994125728567135c8f89119b3bf933ec60dc3566",
+      "compliance": [
+        "CIS",
+        "NIST",
+        "Internal Baseline"
+      ]
+    },
+    {
+      "policy_id": "CUSTOM_AWS_002",
+      "name": "Block public RDP ingress",
+      "version": 1,
+      "severity": "HIGH",
+      "action": "DENY",
+      "enabled": true,
+      "source_file": "policies/terraform/aws_security.rego",
+      "runtime_file": "reports/policy/dummy-scan/runtime-policies/aws_security.rego",
+      "sha256": "eeb98b6e71acbac5a82e1d85994125728567135c8f89119b3bf933ec60dc3566",
+      "compliance": [
+        "CIS",
+        "NIST",
+        "Internal Baseline"
+      ]
+    },
+    {
+      "policy_id": "CUSTOM_AWS_003",
+      "name": "Block public S3 ACL",
+      "version": 1,
+      "severity": "CRITICAL",
+      "action": "DENY",
+      "enabled": true,
+      "source_file": "policies/terraform/aws_security.rego",
+      "runtime_file": "reports/policy/dummy-scan/runtime-policies/aws_security.rego",
+      "sha256": "eeb98b6e71acbac5a82e1d85994125728567135c8f89119b3bf933ec60dc3566",
+      "compliance": [
+        "CIS",
+        "NIST",
+        "Internal Baseline"
+      ]
+    },
+    {
+      "policy_id": "CUSTOM_AWS_004",
+      "name": "Prevent S3 encryption removal",
+      "version": 1,
+      "severity": "CRITICAL",
+      "action": "DENY",
+      "enabled": true,
+      "source_file": "policies/terraform/aws_security.rego",
+      "runtime_file": "reports/policy/dummy-scan/runtime-policies/aws_security.rego",
+      "sha256": "eeb98b6e71acbac5a82e1d85994125728567135c8f89119b3bf933ec60dc3566",
+      "compliance": [
+        "CIS",
+        "NIST",
+        "Internal Baseline"
+      ]
+    },
+    {
+      "policy_id": "CUSTOM_TAG_001",
+      "name": "Require Environment tag",
+      "version": 1,
+      "severity": "LOW",
+      "action": "DENY",
+      "enabled": true,
+      "source_file": "policies/terraform/tagging.rego",
+      "runtime_file": "reports/policy/dummy-scan/runtime-policies/tagging.rego",
+      "sha256": "4e748ca073270e02d63d245c50bf36bbdb5d59eeb880ecaad04c2a334614fa89",
+      "compliance": [
+        "Internal Governance"
+      ]
+    },
+    {
+      "policy_id": "CUSTOM_TAG_002",
+      "name": "Require Owner tag",
+      "version": 1,
+      "severity": "LOW",
+      "action": "DENY",
+      "enabled": true,
+      "source_file": "policies/terraform/tagging.rego",
+      "runtime_file": "reports/policy/dummy-scan/runtime-policies/tagging.rego",
+      "sha256": "4e748ca073270e02d63d245c50bf36bbdb5d59eeb880ecaad04c2a334614fa89",
+      "compliance": [
+        "Internal Governance"
+      ]
+    },
+    {
+      "policy_id": "CUSTOM_IAM_001",
+      "name": "Block IAM wildcard administrator policy",
+      "version": 1,
+      "severity": "CRITICAL",
+      "action": "DENY",
+      "enabled": true,
+      "source_file": "policies/terraform/compliance.rego",
+      "runtime_file": "reports/policy/dummy-scan/runtime-policies/compliance.rego",
+      "sha256": "abcb696d941fd3dc5f9039f933c878a3ae3341208a31eff0a08a93317fa4bf69",
+      "compliance": [
+        "Least Privilege",
+        "CIS",
+        "NIST",
+        "Internal Baseline"
+      ]
+    }
+  ],
+  "summary": {
+    "total_violations": 0,
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0
+  },
+  "violations": [],
+  "commands_executed": [
+    {
+      "command": "conftest test repositories/cloned/dummy-scan/main.tf --policy reports/policy/dummy-scan/runtime-policies --parser hcl2 --output json",
+      "working_directory": ".",
+      "started_at": "2026-05-10T16:11:44.050961+00:00",
+      "completed_at": "2026-05-10T16:11:44.052033+00:00",
+      "exit_code": -2,
+      "stdout": "",
+      "stderr": "Binary not found: conftest",
+      "input_file": "repositories/cloned/dummy-scan/main.tf"
+    }
+  ],
+  "artifacts": {
+    "conftest_results": "reports/policy/dummy-scan/conftest-results.json",
+    "policy_evidence": "reports/policy/dummy-scan/policy-evidence.json"
+  },
+  "error_message": "Conftest execution error: Binary not found: conftest",
+  "forensic_note": "Source-based Policy-as-Code validation evaluates Terraform source files directly using Conftest HCL2 parsing. It does not run terraform plan and does not require AWS credentials or live cloud access."
+}

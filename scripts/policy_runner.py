@@ -4,15 +4,19 @@ scripts/policy_runner.py
 Run the full Policy-as-Code enforcement stage.
 
 Pipeline behaviour:
-    1. Read SCAN_ID and POLICY_ENFORCEMENT_MODE.
-    2. Generate Terraform plan JSON (calls terraform_plan.generate_plan).
-    3. Load policy metadata, select enabled policies.
-    4. Snapshot enabled policy files into reports/policy/<SCAN_ID>/runtime-policies/.
-    5. Hash all inputs (plan JSON, policy files, metadata).
-    6. Run Conftest against the plan JSON using the runtime policies.
-    7. Save raw Conftest output to conftest-results.json.
-    8. Normalise into policy-evidence.json.
-    9. Exit code depends on POLICY_ENFORCEMENT_MODE.
+    1. Read SCAN_ID, POLICY_ENFORCEMENT_MODE, and POLICY_INPUT_MODE.
+    2. Input Mode = SOURCE (Default):
+       a. Discover Terraform source files recursively.
+       b. Load policy metadata, select enabled policies.
+       c. Snapshot enabled policy files.
+       d. Run Conftest sequentially against each Terraform file using --parser hcl2.
+       e. Normalize and combine policy findings.
+    3. Input Mode = PLAN:
+       a. Generate Terraform plan JSON (calls terraform_plan.generate_plan).
+       b. Load, select, and snapshot policies.
+       c. Run Conftest against the plan JSON.
+    4. Write forensic-ready policy-evidence.json.
+    5. Exit code depends on POLICY_ENFORCEMENT_MODE.
 
 Distinguishes between:
     - Policy violations (Conftest returns findings) → status=FAIL, decision=DENY
@@ -23,9 +27,14 @@ Enforcement modes (POLICY_ENFORCEMENT_MODE env var):
     - advisory  (default) — violations recorded as findings, exit 0
     - blocking            — violations block pipeline, exit 1
 
+Input modes (POLICY_INPUT_MODE env var):
+    - source (default) — direct evaluation of .tf files (no AWS credentials required)
+    - plan             — evaluation of terraform-plan.json
+
 Environment variables:
     SCAN_ID                  — required
     POLICY_ENFORCEMENT_MODE  — optional (default: advisory)
+    POLICY_INPUT_MODE        — optional (default: source)
     REPO_URL / BRANCH / GITHUB_SHA / GITHUB_RUN_ID — optional context
 """
 
@@ -45,6 +54,37 @@ from scripts.utils.evidence import (
     collect_github_metadata,
 )
 from scripts.terraform_plan import generate_plan
+
+# ---------------------------------------------------------------------------
+# Terraform plan failure diagnostics
+# ---------------------------------------------------------------------------
+
+def print_plan_failure_diagnostics(scan_id: str, plan_metadata_path: str):
+    """Read plan metadata and print stderr for debugging in CI logs."""
+    print(f"[policy_runner] Terraform plan generation failed.")
+    print(f"[policy_runner] Check details in: {plan_metadata_path}")
+
+    plan_meta = safe_read_json(plan_metadata_path)
+    if not isinstance(plan_meta, dict):
+        print(f"[policy_runner] Could not read plan metadata.")
+        return
+
+    commands = plan_meta.get("commands_executed", [])
+    for cmd in commands:
+        if not isinstance(cmd, dict):
+            continue
+        if cmd.get("exit_code", 0) != 0:
+            cmd_str = cmd.get("command", "unknown command")
+            stderr = cmd.get("stderr", "")
+            print(f"[policy_runner] Failed command: {cmd_str}")
+            print(f"[policy_runner] terraform stderr (last 2000 chars):")
+            print(stderr[-2000:])
+            break
+    else:
+        # No failed command found — show the error message
+        err = plan_meta.get("error_message", "")
+        if err:
+            print(f"[policy_runner] Error: {err}")
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +143,26 @@ def get_conftest_version() -> str:
 
 
 # ---------------------------------------------------------------------------
+# File discovery
+# ---------------------------------------------------------------------------
+
+def discover_terraform_source_files(clone_dir: str) -> list[str]:
+    """Recursively find .tf and .tf.json files, ignoring hidden/internal dirs."""
+    discovered = []
+    ignore_dirs = {".terraform", ".git", "reports"}
+    
+    for root, dirs, files in os.walk(clone_dir):
+        # Modify dirs in-place to skip ignored directories
+        dirs[:] = [d for d in dirs if d not in ignore_dirs and not d.startswith(".")]
+        
+        for file in files:
+            if file.endswith(".tf") or file.endswith(".tf.json"):
+                discovered.append(os.path.join(root, file))
+                
+    return sorted(discovered)
+
+
+# ---------------------------------------------------------------------------
 # Policy helpers
 # ---------------------------------------------------------------------------
 
@@ -124,13 +184,9 @@ def snapshot_policies(
     source_dir: str,
     runtime_dir: str,
 ) -> list[dict]:
-    """Copy enabled policy files to the runtime snapshot directory.
-
-    Returns a list of snapshot records with hashes.
-    """
+    """Copy enabled policy files to the runtime snapshot directory."""
     os.makedirs(runtime_dir, exist_ok=True)
     snapshot = []
-    # Track which files we've already copied
     copied_files = set()
 
     for policy in enabled_policies:
@@ -164,12 +220,8 @@ def snapshot_policies(
 # Conftest execution
 # ---------------------------------------------------------------------------
 
-def run_conftest(plan_json_path: str, policy_dir: str) -> tuple[dict, list]:
-    """Run Conftest and return (cmd_record, parsed_results).
-
-    Conftest exit code 1 means violations found (not a crash).
-    Exit code 2+ or negative means tool error.
-    """
+def run_conftest_plan(plan_json_path: str, policy_dir: str) -> tuple[dict, list]:
+    """Run Conftest in plan mode and return (cmd_record, parsed_results)."""
     cmd = [
         "conftest", "test",
         plan_json_path,
@@ -178,13 +230,9 @@ def run_conftest(plan_json_path: str, policy_dir: str) -> tuple[dict, list]:
     ]
 
     cmd_record = run_cmd(cmd)
+    cmd_record["input_file"] = plan_json_path
+    
     parsed_results = []
-
-    if cmd_record["exit_code"] == -2:
-        # Conftest binary not found
-        return cmd_record, []
-
-    # Try to parse stdout as JSON
     stdout = cmd_record["stdout"]
     if stdout.strip():
         try:
@@ -195,24 +243,50 @@ def run_conftest(plan_json_path: str, policy_dir: str) -> tuple[dict, list]:
     return cmd_record, parsed_results
 
 
+def run_conftest_source(source_files: list[str], policy_dir: str) -> tuple[list[dict], list]:
+    """Run Conftest sequentially per source file.
+    
+    Returns (list_of_cmd_records, combined_parsed_results).
+    """
+    cmd_records = []
+    combined_results = []
+    
+    for file_path in source_files:
+        cmd = [
+            "conftest", "test",
+            file_path,
+            "--policy", policy_dir,
+            "--parser", "hcl2",
+            "--output", "json",
+        ]
+        
+        cmd_record = run_cmd(cmd)
+        cmd_record["input_file"] = file_path
+        cmd_records.append(cmd_record)
+        
+        stdout = cmd_record["stdout"]
+        if stdout.strip():
+            try:
+                parsed = json.loads(stdout)
+                # Conftest usually returns a list of results per test run.
+                # Inject the input file into each result block to track origin.
+                if isinstance(parsed, list):
+                    for block in parsed:
+                        if isinstance(block, dict):
+                            block["_source_file"] = file_path
+                    combined_results.extend(parsed)
+            except json.JSONDecodeError:
+                pass
+                
+    return cmd_records, combined_results
+
+
 # ---------------------------------------------------------------------------
 # Results normalisation
 # ---------------------------------------------------------------------------
 
-def extract_violations(conftest_results: list) -> list[dict]:
-    """Extract violation entries from Conftest JSON output.
-
-    Conftest output structure:
-    [
-      {
-        "filename": "...",
-        "successes": 0,
-        "failures": [ { "msg": "...", "metadata": {...} } ],
-        "warnings": [...],
-        "exceptions": [...]
-      }
-    ]
-    """
+def extract_violations(conftest_results: list, is_source_mode: bool) -> list[dict]:
+    """Extract violation entries from Conftest JSON output."""
     violations = []
     if not isinstance(conftest_results, list):
         return violations
@@ -220,6 +294,9 @@ def extract_violations(conftest_results: list) -> list[dict]:
     for result_block in conftest_results:
         if not isinstance(result_block, dict):
             continue
+            
+        source_file = result_block.get("_source_file", "")
+        
         failures = result_block.get("failures", [])
         if not isinstance(failures, list):
             continue
@@ -246,6 +323,12 @@ def extract_violations(conftest_results: list) -> list[dict]:
                     violation["reason"] = msg
             else:
                 violation = {"reason": str(msg)}
+                
+            # Inject source tracking for source mode
+            if is_source_mode:
+                violation["input_file"] = source_file
+                if "input_type" not in violation:
+                    violation["input_type"] = "terraform_source_hcl"
 
             violations.append(violation)
 
@@ -266,38 +349,6 @@ def build_severity_counts(violations: list[dict]) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Terraform plan failure diagnostics
-# ---------------------------------------------------------------------------
-
-def print_plan_failure_diagnostics(scan_id: str, plan_metadata_path: str):
-    """Read plan metadata and print stderr for debugging in CI logs."""
-    print(f"[policy_runner] Terraform plan generation failed.")
-    print(f"[policy_runner] Check details in: {plan_metadata_path}")
-
-    plan_meta = safe_read_json(plan_metadata_path)
-    if not isinstance(plan_meta, dict):
-        print(f"[policy_runner] Could not read plan metadata.")
-        return
-
-    commands = plan_meta.get("commands_executed", [])
-    for cmd in commands:
-        if not isinstance(cmd, dict):
-            continue
-        if cmd.get("exit_code", 0) != 0:
-            cmd_str = cmd.get("command", "unknown command")
-            stderr = cmd.get("stderr", "")
-            print(f"[policy_runner] Failed command: {cmd_str}")
-            print(f"[policy_runner] terraform stderr (last 2000 chars):")
-            print(stderr[-2000:])
-            break
-    else:
-        # No failed command found — show the error message
-        err = plan_meta.get("error_message", "")
-        if err:
-            print(f"[policy_runner] Error: {err}")
-
-
-# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -310,18 +361,23 @@ def main():
     # Enforcement mode
     enforcement_mode_raw = os.environ.get("POLICY_ENFORCEMENT_MODE", "advisory").strip().lower()
     if enforcement_mode_raw not in ("advisory", "blocking"):
-        print(f"[policy_runner] WARNING: Unknown POLICY_ENFORCEMENT_MODE='{enforcement_mode_raw}', defaulting to 'advisory'.")
         enforcement_mode_raw = "advisory"
-    enforcement_mode = enforcement_mode_raw.upper()  # ADVISORY or BLOCKING
+    enforcement_mode = enforcement_mode_raw.upper()
     is_blocking = enforcement_mode == "BLOCKING"
+    
+    # Input mode
+    input_mode_raw = os.environ.get("POLICY_INPUT_MODE", "source").strip().lower()
+    if input_mode_raw not in ("source", "plan"):
+        input_mode_raw = "source"
+    input_mode = input_mode_raw.upper()
+    is_source_mode = input_mode == "SOURCE"
 
     overall_started = utc_now_iso()
+    clone_dir = os.path.join("repositories", "cloned", scan_id)
     report_dir = os.path.join("reports", "policy", scan_id)
     runtime_policy_dir = os.path.join(report_dir, "runtime-policies")
     conftest_results_path = os.path.join(report_dir, "conftest-results.json")
     evidence_path = os.path.join(report_dir, "policy-evidence.json")
-    plan_json_path = os.path.join(report_dir, "terraform-plan.json")
-    plan_metadata_path = os.path.join(report_dir, "terraform-plan-metadata.json")
     policy_metadata_source = os.path.join("policies", "terraform", "policy-metadata.json")
     policy_source_dir = os.path.join("policies", "terraform")
 
@@ -332,42 +388,85 @@ def main():
 
     print(f"[policy_runner] SCAN_ID             = {scan_id}")
     print(f"[policy_runner] Enforcement mode    = {enforcement_mode}")
+    print(f"[policy_runner] Input mode          = {input_mode}")
 
-    # ---- Step 1: Generate Terraform plan JSON ----
-    print("[policy_runner] Generating Terraform plan JSON...")
-    plan_success, plan_path = generate_plan(scan_id)
+    # Variables tracking execution context
+    plan_json_path = None
+    plan_metadata_path = None
+    plan_sha256 = None
+    source_files_meta = []
+    
+    # ---- Step 1: Input preparation ----
+    if is_source_mode:
+        print("[policy_runner] Discovering Terraform source files...")
+        if not os.path.isdir(clone_dir):
+            print(f"[policy_runner] WARNING: Cloned repo not found: {clone_dir}")
+            discovered_files = []
+        else:
+            discovered_files = discover_terraform_source_files(clone_dir)
+            
+        print(f"[policy_runner] Discovered files    = {len(discovered_files)}")
+        
+        for f in discovered_files:
+            source_files_meta.append({
+                "path": f,
+                "sha256": sha256_file(f)
+            })
+            
+        if len(discovered_files) == 0:
+            error_msg = "No Terraform source files found to evaluate."
+            _write_evidence(
+                evidence_path, scan_id, overall_started,
+                input_mode=input_mode,
+                status="ERROR", decision="ERROR",
+                error_message=error_msg,
+                github_meta=github_meta,
+                policy_metadata_source=policy_metadata_source,
+                runtime_policy_dir=runtime_policy_dir,
+                policy_snapshot=[], violations=[], commands_executed=[],
+                conftest_results_path=conftest_results_path,
+                enforcement_mode=enforcement_mode,
+                pipeline_blocked=is_blocking,
+                actual_exit_code=1 if is_blocking else 0,
+                enforcement_reason=error_msg,
+                clone_dir=clone_dir,
+                source_files_meta=source_files_meta,
+            )
+            print(f"[policy_runner] ERROR: {error_msg}")
+            sys.exit(1 if is_blocking else 0)
+            
+    else:
+        # Plan mode
+        print("[policy_runner] Generating Terraform plan JSON...")
+        plan_json_path = os.path.join(report_dir, "terraform-plan.json")
+        plan_metadata_path = os.path.join(report_dir, "terraform-plan-metadata.json")
+        plan_success, _ = generate_plan(scan_id)
 
-    if not plan_success:
-        print_plan_failure_diagnostics(scan_id, plan_metadata_path)
+        if not plan_success:
+            print_plan_failure_diagnostics(scan_id, plan_metadata_path)
+            error_msg = "Terraform plan generation failed. See terraform-plan-metadata.json."
+            _write_evidence(
+                evidence_path, scan_id, overall_started,
+                input_mode=input_mode,
+                status="ERROR", decision="ERROR",
+                error_message=error_msg,
+                github_meta=github_meta,
+                plan_json_path=plan_json_path, plan_metadata_path=plan_metadata_path,
+                policy_metadata_source=policy_metadata_source,
+                runtime_policy_dir=runtime_policy_dir,
+                policy_snapshot=[], violations=[], commands_executed=[],
+                conftest_results_path=conftest_results_path,
+                enforcement_mode=enforcement_mode,
+                pipeline_blocked=is_blocking,
+                actual_exit_code=1 if is_blocking else 0,
+                enforcement_reason=error_msg,
+                clone_dir=clone_dir,
+            )
+            print(f"[policy_runner] ERROR: {error_msg}")
+            sys.exit(1 if is_blocking else 0)
+            
+        plan_sha256 = sha256_file(plan_json_path)
 
-        pipeline_blocked = is_blocking
-        exit_code = 1 if is_blocking else 0
-
-        _write_evidence(
-            evidence_path, scan_id, overall_started,
-            status="ERROR", decision="ERROR",
-            error_message="Terraform plan generation failed. See terraform-plan-metadata.json.",
-            github_meta=github_meta,
-            plan_json_path=plan_json_path,
-            policy_metadata_source=policy_metadata_source,
-            runtime_policy_dir=runtime_policy_dir,
-            policy_snapshot=[],
-            violations=[],
-            commands_executed=commands_executed,
-            plan_metadata_path=plan_metadata_path,
-            conftest_results_path=conftest_results_path,
-            enforcement_mode=enforcement_mode,
-            pipeline_blocked=pipeline_blocked,
-            actual_exit_code=exit_code,
-        )
-
-        print(f"\n{'='*60}")
-        print(f"  POLICY-AS-CODE: ERROR")
-        print(f"  Enforcement mode : {enforcement_mode}")
-        print(f"  Pipeline blocked : {pipeline_blocked}")
-        print(f"  Evidence         : {evidence_path}")
-        print(f"{'='*60}\n")
-        sys.exit(exit_code)
 
     # ---- Step 2: Load and snapshot policies ----
     print("[policy_runner] Loading policy metadata...")
@@ -381,48 +480,46 @@ def main():
 
     print("[policy_runner] Creating policy snapshot...")
     policy_snapshot = snapshot_policies(enabled, policy_source_dir, runtime_policy_dir)
-
-    # ---- Step 3: Hash inputs ----
-    plan_sha256 = sha256_file(plan_json_path)
     metadata_sha256 = sha256_file(policy_metadata_source)
 
-    # ---- Step 4: Run Conftest ----
+
+    # ---- Step 3: Run Conftest ----
     conftest_version = get_conftest_version()
     print(f"[policy_runner] Conftest version    = {conftest_version}")
     print("[policy_runner] Running Conftest...")
 
-    conftest_cmd, conftest_results = run_conftest(plan_json_path, runtime_policy_dir)
-    commands_executed.append(conftest_cmd)
+    if is_source_mode:
+        cmds, conftest_results = run_conftest_source(discovered_files, runtime_policy_dir)
+        commands_executed.extend(cmds)
+        # Check if any command was a tool error (exit code < 0 or > 1)
+        is_tool_error = any(c["exit_code"] < 0 or c["exit_code"] > 1 for c in cmds)
+        error_stderr = next((c["stderr"] for c in cmds if c["exit_code"] < 0 or c["exit_code"] > 1), "")
+    else:
+        cmd, conftest_results = run_conftest_plan(plan_json_path, runtime_policy_dir)
+        commands_executed.append(cmd)
+        is_tool_error = cmd["exit_code"] < 0 or cmd["exit_code"] > 1
+        error_stderr = cmd["stderr"]
 
     # Save raw Conftest results
     safe_write_json(
         conftest_results_path,
-        conftest_results if conftest_results else {
-            "raw_stdout": conftest_cmd["stdout"],
-            "raw_stderr": conftest_cmd["stderr"],
-        },
+        {
+            "input_mode": input_mode,
+            "results": conftest_results
+        }
     )
 
-    # ---- Step 5: Determine status ----
-    is_tool_error = False
-    if conftest_cmd["exit_code"] == -2:
-        is_tool_error = True
-    elif conftest_cmd["exit_code"] < 0:
-        is_tool_error = True
-    elif conftest_cmd["exit_code"] > 1:
-        # Conftest returns 2 for syntax errors etc.
-        is_tool_error = True
-
+    # ---- Step 4: Determine status ----
     violations = []
     if not is_tool_error:
-        violations = extract_violations(conftest_results)
+        violations = extract_violations(conftest_results, is_source_mode)
 
     severity_counts = build_severity_counts(violations)
 
     if is_tool_error:
         status = "ERROR"
         decision = "ERROR"
-        error_message = f"Conftest execution error (exit {conftest_cmd['exit_code']}): {conftest_cmd['stderr'][:500]}"
+        error_message = f"Conftest execution error: {error_stderr[:500]}"
     elif len(violations) > 0:
         status = "FAIL"
         decision = "DENY"
@@ -432,27 +529,22 @@ def main():
         decision = "ALLOW"
         error_message = None
 
-    # ---- Step 6: Determine enforcement outcome ----
+    # ---- Step 5: Determine enforcement outcome ----
     if status == "PASS":
         pipeline_blocked = False
         exit_code = 0
-    elif status == "ERROR":
-        pipeline_blocked = is_blocking
-        exit_code = 1 if is_blocking else 0
-    else:
-        # FAIL / DENY
-        pipeline_blocked = is_blocking
-        exit_code = 1 if is_blocking else 0
-
-    # Build enforcement reason
-    if status == "PASS":
         enforcement_reason = "All policies passed. No violations detected."
     elif status == "ERROR":
+        pipeline_blocked = is_blocking
+        exit_code = 1 if is_blocking else 0
         enforcement_reason = f"Tool error occurred. Pipeline {'blocked' if pipeline_blocked else 'continues (advisory mode)'}."
-    elif is_blocking:
-        enforcement_reason = f"Policy violations detected. Pipeline blocked ({len(violations)} violation(s))."
     else:
-        enforcement_reason = f"Policy findings recorded as advisory findings ({len(violations)} violation(s)). Pipeline continues."
+        pipeline_blocked = is_blocking
+        exit_code = 1 if is_blocking else 0
+        if is_blocking:
+            enforcement_reason = f"Policy violations detected. Pipeline blocked ({len(violations)} violation(s))."
+        else:
+            enforcement_reason = f"Policy findings recorded as advisory findings ({len(violations)} violation(s)). Pipeline continues."
 
     print(f"[policy_runner] Status              = {status}")
     print(f"[policy_runner] Decision            = {decision}")
@@ -460,14 +552,13 @@ def main():
     print(f"[policy_runner] Severity counts     = {severity_counts}")
     print(f"[policy_runner] Pipeline blocked     = {pipeline_blocked}")
 
-    # ---- Step 7: Write evidence ----
+    # ---- Step 6: Write evidence ----
     _write_evidence(
         evidence_path, scan_id, overall_started,
+        input_mode=input_mode,
         status=status, decision=decision,
         error_message=error_message,
         github_meta=github_meta,
-        plan_json_path=plan_json_path,
-        plan_sha256=plan_sha256,
         policy_metadata_source=policy_metadata_source,
         metadata_sha256=metadata_sha256,
         runtime_policy_dir=runtime_policy_dir,
@@ -475,18 +566,22 @@ def main():
         violations=violations,
         severity_counts=severity_counts,
         commands_executed=commands_executed,
-        plan_metadata_path=plan_metadata_path,
         conftest_results_path=conftest_results_path,
         conftest_version=conftest_version,
         enforcement_mode=enforcement_mode,
         pipeline_blocked=pipeline_blocked,
         actual_exit_code=exit_code,
         enforcement_reason=enforcement_reason,
+        clone_dir=clone_dir,
+        source_files_meta=source_files_meta,
+        plan_json_path=plan_json_path,
+        plan_sha256=plan_sha256,
+        plan_metadata_path=plan_metadata_path,
     )
 
     print(f"[policy_runner] Evidence            = {evidence_path}")
 
-    # ---- Step 8: Console output ----
+    # ---- Step 7: Console output ----
     if status == "FAIL":
         if is_blocking:
             print(f"\n{'='*60}")
@@ -525,19 +620,18 @@ def _write_evidence(
     scan_id: str,
     started_at: str,
     *,
+    input_mode: str,
     status: str,
     decision: str,
     error_message: str | None,
     github_meta: dict,
-    plan_json_path: str,
     policy_metadata_source: str,
     runtime_policy_dir: str,
     policy_snapshot: list,
     violations: list,
     commands_executed: list,
-    plan_metadata_path: str,
     conftest_results_path: str,
-    plan_sha256: str | None = None,
+    clone_dir: str,
     metadata_sha256: str | None = None,
     severity_counts: dict | None = None,
     conftest_version: str = "unknown",
@@ -545,19 +639,32 @@ def _write_evidence(
     pipeline_blocked: bool = False,
     actual_exit_code: int = 0,
     enforcement_reason: str = "",
+    source_files_meta: list | None = None,
+    plan_json_path: str | None = None,
+    plan_sha256: str | None = None,
+    plan_metadata_path: str | None = None,
 ):
-    """Write the policy-evidence.json file — always, even on error."""
+    """Write the policy-evidence.json file."""
     if severity_counts is None:
         severity_counts = build_severity_counts(violations)
+        
+    is_source = input_mode == "SOURCE"
 
     evidence = {
         "scan_id": scan_id,
         "stage": "policy_as_code",
+        "input_mode": input_mode,
         "toolchain": {
             "policy_engine": "Open Policy Agent",
             "policy_language": "Rego",
             "runner": "Conftest",
             "conftest_version": conftest_version,
+        },
+        "execution_context": {
+            "live_cloud_access_required": False if is_source else True,
+            "terraform_plan_required": False if is_source else True,
+            "terraform_backend_access_required": False if is_source else True,
+            "aws_credentials_required": False if is_source else True,
         },
         "enforcement": {
             "mode": enforcement_mode,
@@ -576,8 +683,7 @@ def _write_evidence(
             "github_run_id": github_meta.get("workflow_run_id"),
         },
         "inputs": {
-            "terraform_plan_json": plan_json_path,
-            "terraform_plan_sha256": plan_sha256,
+            "cloned_repository_path": clone_dir,
             "policy_metadata": policy_metadata_source,
             "policy_metadata_sha256": metadata_sha256,
             "runtime_policy_directory": runtime_policy_dir,
@@ -593,12 +699,20 @@ def _write_evidence(
         "violations": violations,
         "commands_executed": commands_executed,
         "artifacts": {
-            "terraform_plan_metadata": plan_metadata_path,
             "conftest_results": conftest_results_path,
             "policy_evidence": evidence_path,
         },
         "error_message": error_message,
     }
+    
+    if is_source:
+        evidence["inputs"]["terraform_source_files"] = source_files_meta or []
+        evidence["inputs"]["terraform_source_file_count"] = len(source_files_meta or [])
+        evidence["forensic_note"] = "Source-based Policy-as-Code validation evaluates Terraform source files directly using Conftest HCL2 parsing. It does not run terraform plan and does not require AWS credentials or live cloud access."
+    else:
+        evidence["inputs"]["terraform_plan_json"] = plan_json_path
+        evidence["inputs"]["terraform_plan_sha256"] = plan_sha256
+        evidence["artifacts"]["terraform_plan_metadata"] = plan_metadata_path
 
     safe_write_json(evidence_path, evidence)
 

@@ -195,6 +195,7 @@ jobs:
         run: python scripts/policy_runner.py
         env:
           POLICY_ENFORCEMENT_MODE: advisory
+          POLICY_INPUT_MODE: source
 
       - name: "Stage 9 (skipped): Policy checks skipped — validation failed"
         if: steps.terraform_validation.outcome != 'success'

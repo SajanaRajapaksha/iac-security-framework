@@ -61,9 +61,13 @@ def build_policy_section(scan_id: str) -> dict | None:
 
     summary = evidence.get("summary", {})
     enforcement = evidence.get("enforcement", {})
-    return {
+    execution_context = evidence.get("execution_context", {})
+    inputs = evidence.get("inputs", {})
+    
+    section = {
         "status": evidence.get("status", "UNKNOWN"),
         "decision": evidence.get("decision", "UNKNOWN"),
+        "input_mode": evidence.get("input_mode", "UNKNOWN"),
         "enforcement_mode": enforcement.get("mode", "UNKNOWN"),
         "pipeline_blocked": enforcement.get("pipeline_blocked", False),
         "total_violations": summary.get("total_violations", 0),
@@ -74,13 +78,20 @@ def build_policy_section(scan_id: str) -> dict | None:
             "low": summary.get("low", 0),
         },
         "evidence_path": policy_evidence_path,
-        "terraform_plan_metadata": os.path.join(report_dir, "terraform-plan-metadata.json"),
-        "terraform_plan_json": os.path.join(report_dir, "terraform-plan.json"),
         "conftest_results": os.path.join(report_dir, "conftest-results.json"),
+        "terraform_source_file_count": inputs.get("terraform_source_file_count", 0),
+        "live_cloud_access_required": execution_context.get("live_cloud_access_required", False),
+        "aws_credentials_required": execution_context.get("aws_credentials_required", False),
         "runner": "Conftest",
         "policy_language": "Rego",
         "policy_engine": "Open Policy Agent",
     }
+    
+    if evidence.get("input_mode") == "PLAN":
+        section["terraform_plan_metadata"] = os.path.join(report_dir, "terraform-plan-metadata.json")
+        section["terraform_plan_json"] = os.path.join(report_dir, "terraform-plan.json")
+        
+    return section
 
 
 def main():

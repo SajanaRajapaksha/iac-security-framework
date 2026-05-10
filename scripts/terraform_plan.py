@@ -243,11 +243,6 @@ def _write_metadata(
             "github_run_id": github_meta.get("workflow_run_id"),
         },
         "error_message": error_message,
-        "forensic_note": (
-            "Terraform plan was generated with -backend=false (no remote state) "
-            "and -refresh=false (no cloud infrastructure refresh) to support "
-            "static/pre-deployment scanning without requiring live cloud access."
-        ),
     }
 
     safe_write_json(metadata_path, metadata)
