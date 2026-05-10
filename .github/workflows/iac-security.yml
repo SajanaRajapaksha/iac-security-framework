@@ -211,6 +211,14 @@ jobs:
         run: python scripts/static_analysis_report.py
 
       # ================================================================
+      # STAGE 11: CONSOLE OUTPUT
+      # ================================================================
+
+      - name: "Stage 11: Print combined findings to console"
+        if: steps.terraform_validation.outcome == 'success'
+        run: python scripts/list_findings.py ${{ steps.scan.outputs.scan_id }}
+
+      # ================================================================
       # ARTIFACT UPLOAD (always — even on failure)
       # ================================================================
 
