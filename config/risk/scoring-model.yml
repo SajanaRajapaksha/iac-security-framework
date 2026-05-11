@@ -1,0 +1,134 @@
+# =============================================================================
+# config/risk/scoring-model.yml
+#
+# Deterministic scoring model configuration.
+# All factor tables, weights, thresholds, and constants are defined here.
+# The calculate_risk_score.py script reads this file at runtime.
+# =============================================================================
+
+# ---- Finding-level risk formula ----
+# FindingRisk = min(100,
+#   BaseControlCriticality
+#   × ExposureFactor
+#   × ExploitabilityFactor
+#   × EnforcementFactor
+#   × DetectionConfidence
+#   × BlastRadiusFactor
+#   × CompensatingControlFactor
+# )
+
+# ---- BaseControlCriticality (from CIS mapping) ----
+base_control_criticality:
+  PUBLIC_ADMIN_ACCESS: 10
+  PUBLIC_STORAGE_ACCESS: 10
+  HARDCODED_SECRET: 10
+  IAM_OVER_PRIVILEGE: 10
+  PUBLIC_DATABASE_ACCESS: 9
+  CLOUDTRAIL_DISABLED: 8
+  ENCRYPTION_DISABLED: 8
+  LOGGING_DISABLED: 7
+  WEAK_TLS_OR_HTTP: 7
+  PUBLIC_SERVICE_EXPOSURE: 7
+  UNRESTRICTED_EGRESS: 6
+  BACKUP_DISABLED: 5
+  VERSIONING_DISABLED: 5
+  UNKNOWN_SECURITY_MISCONFIGURATION: 4
+  HYGIENE_ISSUE: 3
+
+# ---- ExposureFactor ----
+exposure_factor:
+  public_admin_access: 2.0
+  public_storage_or_database: 1.9
+  public_service_exposure: 1.7
+  internal_only: 1.2
+  local_only: 1.0
+  default: 1.2
+
+# ---- ExploitabilityFactor ----
+exploitability_factor:
+  direct_no_auth: 2.0
+  public_reachable_creds_required: 1.7
+  internal_access_required: 1.3
+  privileged_cloud_access: 1.1
+  compliance_only: 0.8
+  default: 1.0
+
+# ---- EnforcementFactor ----
+enforcement_factor:
+  hard_mandatory: 2.0
+  soft_mandatory: 1.5
+  advisory: 1.2
+  scanner_only: 1.0
+  default: 1.0
+
+# ---- DetectionConfidence ----
+detection_confidence:
+  checkov_trivy_pac: 1.8
+  scanner_pac: 1.6
+  checkov_trivy: 1.4
+  single_scanner: 1.0
+  ai_only_weak: 0.8
+  default: 1.0
+
+# ---- BlastRadiusFactor ----
+blast_radius_factor:
+  shared_module: 1.8
+  production_main_branch: 1.6
+  shared_iam_network_security: 1.5
+  isolated_resource: 1.0
+  test_demo_example: 0.8
+  default: 1.0
+
+# ---- CompensatingControlFactor ----
+compensating_control_factor:
+  none: 1.0
+  logging_enabled: 0.95
+  encryption_enabled: 0.9
+  private_subnet_confirmed: 0.85
+  explicit_deny_restrictive: 0.75
+  default: 1.0
+
+# ---- Overall risk formula weights ----
+overall_risk_weights:
+  highest_resource_risk: 0.45
+  average_top_five_resource_risk: 0.25
+  highest_domain_risk: 0.20
+  policy_failure_score: 0.10
+
+# ---- PolicyFailureScore constants ----
+policy_failure_score:
+  hard_policy_weight: 30
+  soft_policy_weight: 15
+  advisory_policy_weight: 5
+  cap: 100
+
+# ---- Resource risk aggregation ----
+resource_risk:
+  secondary_weight: 0.35
+  cap: 100
+
+# ---- Domain risk aggregation ----
+domain_risk:
+  secondary_weight: 0.25
+  cap: 100
+
+# ---- Decision thresholds ----
+decision_thresholds:
+  - max_score: 19
+    risk_level: VERY_LOW
+    decision: PASS
+  - max_score: 39
+    risk_level: LOW
+    decision: PASS_WITH_ADVISORY
+  - max_score: 59
+    risk_level: MEDIUM
+    decision: REVIEW
+  - max_score: 79
+    risk_level: HIGH
+    decision: FAIL_RECOMMENDED
+  - max_score: 100
+    risk_level: CRITICAL
+    decision: BLOCK_RECOMMENDED
+
+# ---- Mandatory block minimum score ----
+mandatory_block_min_score: 90

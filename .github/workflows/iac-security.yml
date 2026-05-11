@@ -82,6 +82,9 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
@@ -219,6 +222,56 @@ jobs:
         run: python scripts/list_findings.py ${{ steps.scan.outputs.scan_id }}
 
       # ================================================================
+      # STAGE 12-20: CIS-DRIVEN AI-ASSISTED RISK SCORING
+      # ================================================================
+
+      - name: "Stage 12: Normalize findings for risk scoring"
+        if: steps.terraform_validation.outcome == 'success'
+        run: python scripts/risk/normalize_findings.py "$SCAN_ID"
+
+      - name: "Stage 13: Deterministically map known findings"
+        if: steps.terraform_validation.outcome == 'success'
+        run: python scripts/risk/deterministic_map_known_findings.py "$SCAN_ID"
+
+      - name: "Stage 14: AI-map unmapped findings to CIS"
+        if: steps.terraform_validation.outcome == 'success'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4.1-nano' }}
+        run: python scripts/risk/ai_map_unmapped_findings.py "$SCAN_ID"
+
+      - name: "Stage 15: Validate CIS mappings"
+        if: steps.terraform_validation.outcome == 'success'
+        run: python scripts/risk/validate_cis_mapping.py "$SCAN_ID"
+
+      - name: "Stage 16: Merge CIS mappings"
+        if: steps.terraform_validation.outcome == 'success'
+        run: python scripts/risk/merge_mappings.py "$SCAN_ID"
+
+      - name: "Stage 17: Calculate pre-deployment risk score"
+        if: steps.terraform_validation.outcome == 'success'
+        run: python scripts/risk/calculate_risk_score.py "$SCAN_ID"
+
+      - name: "Stage 18: Render risk summary"
+        if: steps.terraform_validation.outcome == 'success'
+        run: python scripts/risk/render_risk_summary.py "$SCAN_ID"
+
+      - name: "Stage 19: Hash risk evidence"
+        if: steps.terraform_validation.outcome == 'success'
+        run: python scripts/risk/hash_risk_evidence.py "$SCAN_ID"
+
+      # ================================================================
+      # STAGE 21: RISK GATE ENFORCEMENT
+      # ================================================================
+
+      - name: "Stage 20: Enforce advisory risk gate"
+        if: steps.terraform_validation.outcome == 'success'
+        env:
+          ENFORCE_RISK_GATE: ${{ vars.ENFORCE_RISK_GATE || 'false' }}
+          STRICT_RISK_GATE: ${{ vars.STRICT_RISK_GATE || 'false' }}
+        run: python scripts/risk/enforce_risk_gate.py "$SCAN_ID"
+
+      # ================================================================
       # ARTIFACT UPLOAD (always — even on failure)
       # ================================================================
 
@@ -243,8 +296,14 @@ jobs:
           name: policy-reports-${{ steps.scan.outputs.scan_id }}
           path: reports/policy/${{ steps.scan.outputs.scan_id }}/
 
+      - name: Upload risk scoring reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: risk-reports-${{ steps.scan.outputs.scan_id }}
+          path: reports/risk/${{ steps.scan.outputs.scan_id }}/
+
       # ---- Future stages (not yet implemented) ----
-      # - Risk scoring
       # - AWS sandbox deployment
       # - Prowler runtime validation
       # - Forensic evidence package generation

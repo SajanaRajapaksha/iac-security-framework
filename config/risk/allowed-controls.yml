@@ -1,0 +1,68 @@
+# =============================================================================
+# config/risk/allowed-controls.yml
+#
+# Canonical security control identifiers.
+# Both deterministic and AI mappers MUST map to exactly one of these.
+# Any mapping to a control not listed here is invalid.
+# =============================================================================
+
+allowed_controls:
+  - id: PUBLIC_ADMIN_ACCESS
+    description: "Public administrative access (SSH, RDP, etc.) from unrestricted CIDR."
+    default_criticality: 10
+
+  - id: PUBLIC_STORAGE_ACCESS
+    description: "Public storage exposure (S3 public ACL, public access block disabled)."
+    default_criticality: 10
+
+  - id: PUBLIC_DATABASE_ACCESS
+    description: "Public database exposure (RDS, DynamoDB, Redshift publicly accessible)."
+    default_criticality: 9
+
+  - id: IAM_OVER_PRIVILEGE
+    description: "IAM wildcard administrator or overly permissive policy."
+    default_criticality: 10
+
+  - id: HARDCODED_SECRET
+    description: "Hardcoded credentials, API keys, or secrets in source code or config."
+    default_criticality: 10
+
+  - id: ENCRYPTION_DISABLED
+    description: "Missing or disabled encryption at rest or in transit."
+    default_criticality: 8
+
+  - id: LOGGING_DISABLED
+    description: "Missing access logging, audit logging, or monitoring."
+    default_criticality: 7
+
+  - id: CLOUDTRAIL_DISABLED
+    description: "AWS CloudTrail or equivalent audit trail is disabled."
+    default_criticality: 8
+
+  - id: UNRESTRICTED_EGRESS
+    description: "Unrestricted outbound/egress network rules."
+    default_criticality: 6
+
+  - id: BACKUP_DISABLED
+    description: "Missing backup, cross-region replication, or lifecycle policies."
+    default_criticality: 5
+
+  - id: VERSIONING_DISABLED
+    description: "Object versioning disabled on storage resources."
+    default_criticality: 5
+
+  - id: WEAK_TLS_OR_HTTP
+    description: "Weak TLS configuration or unencrypted HTTP transport."
+    default_criticality: 7
+
+  - id: UNKNOWN_SECURITY_MISCONFIGURATION
+    description: "Unmapped or unrecognized security finding. Requires manual review."
+    default_criticality: 4
+
+  - id: HYGIENE_ISSUE
+    description: "General governance, tagging, lifecycle, or housekeeping issue."
+    default_criticality: 3
+
+  - id: PUBLIC_SERVICE_EXPOSURE
+    description: "Public exposure of non-admin services (HTTP, custom ports)."
+    default_criticality: 7

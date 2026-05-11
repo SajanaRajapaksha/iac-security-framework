@@ -1,0 +1,383 @@
+# =============================================================================
+# config/risk/cis-mapping.yml
+#
+# Deterministic rule-to-canonical-control mapping.
+# Each key is a source rule ID (Checkov CKV_*, Trivy AVD-*, or custom policy).
+# The mapper checks source_rule_id first, then policy.policy_id.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Checkov — Networking / Security Groups
+# ---------------------------------------------------------------------------
+
+CKV_AWS_24:
+  canonical_control: PUBLIC_ADMIN_ACCESS
+  control_domain: network_boundary_protection
+  base_control_criticality: 10
+  mandatory_block: true
+  cis_controls_v8:
+    - "CIS-4"
+    - "CIS-6"
+    - "CIS-12"
+  aws_control_refs:
+    - "AWS Security Hub EC2.13"
+  description: "Security groups must not allow unrestricted public SSH ingress (port 22)."
+
+CKV_AWS_260:
+  canonical_control: PUBLIC_SERVICE_EXPOSURE
+  control_domain: network_boundary_protection
+  base_control_criticality: 7
+  mandatory_block: false
+  cis_controls_v8:
+    - "CIS-4"
+    - "CIS-12"
+  aws_control_refs:
+    - "AWS Security Hub EC2.19"
+  description: "Security groups should not allow unrestricted public ingress to exposed services."
+
+CKV_AWS_382:
+  canonical_control: UNRESTRICTED_EGRESS
+  control_domain: network_boundary_protection
+  base_control_criticality: 6
+  mandatory_block: false
+  cis_controls_v8:
+    - "CIS-4"
+    - "CIS-12"
+  aws_control_refs: []
+  description: "Security group egress should be restricted to required destinations."
+
+# ---------------------------------------------------------------------------
+# Checkov — S3 Storage
+# ---------------------------------------------------------------------------
+
+CKV_AWS_56:
+  canonical_control: PUBLIC_STORAGE_ACCESS
+  control_domain: data_protection
+  base_control_criticality: 10
+  mandatory_block: true
+  cis_controls_v8:
+    - "CIS-3"
+    - "CIS-6"
+  aws_control_refs:
+    - "AWS Security Hub S3.8"
+  description: "S3 public access block: restrict_public_buckets must be enabled."
+
+CKV_AWS_53:
+  canonical_control: PUBLIC_STORAGE_ACCESS
+  control_domain: data_protection
+  base_control_criticality: 10
+  mandatory_block: true
+  cis_controls_v8:
+    - "CIS-3"
+    - "CIS-6"
+  aws_control_refs:
+    - "AWS Security Hub S3.8"
+  description: "S3 public access block: block_public_acls must be enabled."
+
+CKV_AWS_54:
+  canonical_control: PUBLIC_STORAGE_ACCESS
+  control_domain: data_protection
+  base_control_criticality: 10
+  mandatory_block: true
+  cis_controls_v8:
+    - "CIS-3"
+    - "CIS-6"
+  aws_control_refs:
+    - "AWS Security Hub S3.8"
+  description: "S3 public access block: block_public_policy must be enabled."
+
+CKV_AWS_55:
+  canonical_control: PUBLIC_STORAGE_ACCESS
+  control_domain: data_protection
+  base_control_criticality: 8
+  mandatory_block: false
+  cis_controls_v8:
+    - "CIS-3"
+    - "CIS-6"
+  aws_control_refs:
+    - "AWS Security Hub S3.8"
+  description: "S3 public access block: ignore_public_acls should be enabled."
+
+CKV2_AWS_6:
+  canonical_control: PUBLIC_STORAGE_ACCESS
+  control_domain: data_protection
+  base_control_criticality: 10
+  mandatory_block: true
+  cis_controls_v8:
+    - "CIS-3"
+    - "CIS-6"
+  aws_control_refs:
+    - "AWS Security Hub S3.8"
+  description: "S3 bucket must have a public access block configuration."
+
+# ---------------------------------------------------------------------------
+# Checkov — S3 Encryption & Versioning
+# ---------------------------------------------------------------------------
+
+CKV_AWS_145:
+  canonical_control: ENCRYPTION_DISABLED
+  control_domain: data_protection
+  base_control_criticality: 8
+  mandatory_block: false
+  cis_controls_v8:
+    - "CIS-3"
+  aws_control_refs:
+    - "AWS Security Hub S3.4"
+  description: "S3 bucket should be encrypted with KMS."
+
+CKV_AWS_19:
+  canonical_control: ENCRYPTION_DISABLED
+  control_domain: data_protection
+  base_control_criticality: 8
+  mandatory_block: false
+  cis_controls_v8:
+    - "CIS-3"
+  aws_control_refs:
+    - "AWS Security Hub S3.4"
+  description: "S3 bucket must have server-side encryption enabled."
+
+CKV_AWS_21:
+  canonical_control: VERSIONING_DISABLED
+  control_domain: data_protection
+  base_control_criticality: 5
+  mandatory_block: false
+  cis_controls_v8:
+    - "CIS-3"
+    - "CIS-11"
+  aws_control_refs:
+    - "AWS Security Hub S3.9"
+  description: "S3 bucket should have versioning enabled."
+
+CKV_AWS_144:
+  canonical_control: BACKUP_DISABLED
+  control_domain: data_protection
+  base_control_criticality: 5
+  mandatory_block: false
+  cis_controls_v8:
+    - "CIS-11"
+  aws_control_refs: []
+  description: "S3 bucket should have cross-region replication enabled."
+
+# ---------------------------------------------------------------------------
+# Checkov — S3 Logging & Governance
+# ---------------------------------------------------------------------------
+
+CKV_AWS_18:
+  canonical_control: LOGGING_DISABLED
+  control_domain: logging_and_monitoring
+  base_control_criticality: 7
+  mandatory_block: false
+  cis_controls_v8:
+    - "CIS-8"
+  aws_control_refs:
+    - "AWS Security Hub S3.9"
+  description: "S3 bucket should have access logging enabled."
+
+CKV2_AWS_62:
+  canonical_control: LOGGING_DISABLED
+  control_domain: logging_and_monitoring
+  base_control_criticality: 5
+  mandatory_block: false
+  cis_controls_v8:
+    - "CIS-8"
+  aws_control_refs: []
+  description: "S3 bucket should have event notifications enabled."
+
+CKV2_AWS_61:
+  canonical_control: HYGIENE_ISSUE
+  control_domain: resource_lifecycle
+  base_control_criticality: 3
+  mandatory_block: false
+  cis_controls_v8: []
+  aws_control_refs: []
+  description: "S3 bucket should have lifecycle configuration enabled."
+
+CKV2_AWS_5:
+  canonical_control: HYGIENE_ISSUE
+  control_domain: resource_lifecycle
+  base_control_criticality: 3
+  mandatory_block: false
+  cis_controls_v8: []
+  aws_control_refs: []
+  description: "Security groups should be attached to resources."
+
+# ---------------------------------------------------------------------------
+# Trivy — Networking / Security Groups
+# ---------------------------------------------------------------------------
+
+AVD-AWS-0107:
+  canonical_control: PUBLIC_ADMIN_ACCESS
+  control_domain: network_boundary_protection
+  base_control_criticality: 10
+  mandatory_block: true
+  cis_controls_v8:
+    - "CIS-4"
+    - "CIS-6"
+    - "CIS-12"
+  aws_control_refs:
+    - "AWS Security Hub EC2.13"
+  description: "Security groups must not allow unrestricted SSH/RDP ingress."
+
+AVD-AWS-0104:
+  canonical_control: PUBLIC_SERVICE_EXPOSURE
+  control_domain: network_boundary_protection
+  base_control_criticality: 7
+  mandatory_block: false
+  cis_controls_v8:
+    - "CIS-4"
+    - "CIS-12"
+  aws_control_refs:
+    - "AWS Security Hub EC2.19"
+  description: "Security groups should not allow unrestricted public ingress."
+
+# ---------------------------------------------------------------------------
+# Trivy — S3
+# ---------------------------------------------------------------------------
+
+AVD-AWS-0086:
+  canonical_control: PUBLIC_STORAGE_ACCESS
+  control_domain: data_protection
+  base_control_criticality: 10
+  mandatory_block: true
+  cis_controls_v8:
+    - "CIS-3"
+    - "CIS-6"
+  aws_control_refs:
+    - "AWS Security Hub S3.8"
+  description: "S3 bucket public access should be blocked."
+
+AVD-AWS-0132:
+  canonical_control: ENCRYPTION_DISABLED
+  control_domain: data_protection
+  base_control_criticality: 8
+  mandatory_block: false
+  cis_controls_v8:
+    - "CIS-3"
+  aws_control_refs:
+    - "AWS Security Hub S3.4"
+  description: "S3 bucket should have encryption configured."
+
+AVD-AWS-0089:
+  canonical_control: LOGGING_DISABLED
+  control_domain: logging_and_monitoring
+  base_control_criticality: 7
+  mandatory_block: false
+  cis_controls_v8:
+    - "CIS-8"
+  aws_control_refs: []
+  description: "S3 bucket should have logging enabled."
+
+AVD-AWS-0090:
+  canonical_control: VERSIONING_DISABLED
+  control_domain: data_protection
+  base_control_criticality: 5
+  mandatory_block: false
+  cis_controls_v8:
+    - "CIS-3"
+    - "CIS-11"
+  aws_control_refs: []
+  description: "S3 bucket should have versioning enabled."
+
+AVD-AWS-0093:
+  canonical_control: PUBLIC_STORAGE_ACCESS
+  control_domain: data_protection
+  base_control_criticality: 10
+  mandatory_block: true
+  cis_controls_v8:
+    - "CIS-3"
+    - "CIS-6"
+  aws_control_refs: []
+  description: "S3 bucket ACL should not grant public access."
+
+AVD-AWS-0094:
+  canonical_control: PUBLIC_STORAGE_ACCESS
+  control_domain: data_protection
+  base_control_criticality: 10
+  mandatory_block: true
+  cis_controls_v8:
+    - "CIS-3"
+    - "CIS-6"
+  aws_control_refs: []
+  description: "S3 bucket should not have public read-write ACL."
+
+AVD-AWS-0088:
+  canonical_control: ENCRYPTION_DISABLED
+  control_domain: data_protection
+  base_control_criticality: 8
+  mandatory_block: false
+  cis_controls_v8:
+    - "CIS-3"
+  aws_control_refs: []
+  description: "S3 bucket objects should be encrypted."
+
+# ---------------------------------------------------------------------------
+# Custom Policy-as-Code (Conftest/Rego)
+# ---------------------------------------------------------------------------
+
+CUSTOM_AWS_001:
+  canonical_control: PUBLIC_ADMIN_ACCESS
+  control_domain: network_boundary_protection
+  base_control_criticality: 10
+  mandatory_block: true
+  cis_controls_v8:
+    - "CIS-4"
+    - "CIS-6"
+    - "CIS-12"
+  aws_control_refs:
+    - "AWS Security Hub EC2.13"
+  description: "Custom policy: Block public SSH ingress."
+
+CUSTOM_AWS_002:
+  canonical_control: PUBLIC_ADMIN_ACCESS
+  control_domain: network_boundary_protection
+  base_control_criticality: 10
+  mandatory_block: true
+  cis_controls_v8:
+    - "CIS-4"
+    - "CIS-6"
+    - "CIS-12"
+  aws_control_refs:
+    - "AWS Security Hub EC2.14"
+  description: "Custom policy: Block public RDP ingress."
+
+CUSTOM_AWS_003:
+  canonical_control: PUBLIC_STORAGE_ACCESS
+  control_domain: data_protection
+  base_control_criticality: 10
+  mandatory_block: true
+  cis_controls_v8:
+    - "CIS-3"
+    - "CIS-6"
+  aws_control_refs:
+    - "AWS Security Hub S3.8"
+  description: "Custom policy: Block public S3 ACL."
+
+CUSTOM_TAG_001:
+  canonical_control: HYGIENE_ISSUE
+  control_domain: resource_governance
+  base_control_criticality: 3
+  mandatory_block: false
+  cis_controls_v8: []
+  aws_control_refs: []
+  description: "Custom policy: Require Environment tag on all AWS resources."
+
+CUSTOM_TAG_002:
+  canonical_control: HYGIENE_ISSUE
+  control_domain: resource_governance
+  base_control_criticality: 3
+  mandatory_block: false
+  cis_controls_v8: []
+  aws_control_refs: []
+  description: "Custom policy: Require Owner tag on all AWS resources."
+
+CUSTOM_IAM_001:
+  canonical_control: IAM_OVER_PRIVILEGE
+  control_domain: identity_and_access
+  base_control_criticality: 10
+  mandatory_block: true
+  cis_controls_v8:
+    - "CIS-5"
+    - "CIS-6"
+  aws_control_refs:
+    - "AWS Security Hub IAM.1"
+  description: "Custom policy: Block IAM wildcard administrator policy."

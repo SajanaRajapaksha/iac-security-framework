@@ -1,0 +1,20 @@
+# =============================================================================
+# config/risk/mandatory-blocks.yml
+#
+# Canonical controls that trigger a mandatory BLOCK_RECOMMENDED decision.
+# If any finding maps to one of these controls, the overall score is raised
+# to at least 90 and the suggested_decision becomes BLOCK_RECOMMENDED.
+#
+# Hard mandatory PaC violations are also treated as mandatory blocks.
+# =============================================================================
+
+mandatory_block_controls:
+  - PUBLIC_ADMIN_ACCESS
+  - PUBLIC_STORAGE_ACCESS
+  - PUBLIC_DATABASE_ACCESS
+  - IAM_OVER_PRIVILEGE
+  - HARDCODED_SECRET
+
+# Policy-as-Code enforcement levels that trigger mandatory block
+mandatory_block_policy_levels:
+  - hard_mandatory
