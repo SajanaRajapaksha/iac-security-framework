@@ -24,18 +24,22 @@ from scripts.utils.evidence import safe_read_json, safe_write_json
 
 def load_severities():
     path = ROOT_DIR / "config" / "risk" / "allowed-severities.yml"
+    data = None
     if path.is_file() and yaml:
         with open(path) as f:
-            return yaml.safe_load(f)
-    return {
-        "allowed_severities": ["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"],
-        "severity_normalization": {
-            "INFORMATIONAL": "INFO", "INFO": "INFO", "LOW": "LOW", 
-            "MEDIUM": "MEDIUM", "HIGH": "HIGH", "CRITICAL": "CRITICAL",
-            "NONE": "UNKNOWN", "UNKNOWN": "UNKNOWN", "": "UNKNOWN"
-        },
-        "severity_order": {"INFO": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4, "UNKNOWN": -1}
-    }
+            data = yaml.safe_load(f)
+            
+    if not isinstance(data, dict):
+        data = {
+            "allowed_severities": ["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"],
+            "severity_normalization": {
+                "INFORMATIONAL": "INFO", "INFO": "INFO", "LOW": "LOW", 
+                "MEDIUM": "MEDIUM", "HIGH": "HIGH", "CRITICAL": "CRITICAL",
+                "NONE": "UNKNOWN", "UNKNOWN": "UNKNOWN", "": "UNKNOWN"
+            },
+            "severity_order": {"INFO": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4, "UNKNOWN": -1}
+        }
+    return data
 
 def normalize_sev(sev, config):
     if not sev:
