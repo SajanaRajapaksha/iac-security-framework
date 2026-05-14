@@ -119,7 +119,8 @@ def main():
     for k, v in sev_counts.items():
         md.append(f"| {k} | {v} |")
     
-    safe_write_json(str(risk_dir / "finding-enrichment-summary.md"), "\n".join(md), raw=True)
+    with open(str(risk_dir / "finding-enrichment-summary.md"), "w", encoding="utf-8") as f:
+        f.write("\n".join(md))
 
     # Console Output
     print(f"\n{'='*60}")
