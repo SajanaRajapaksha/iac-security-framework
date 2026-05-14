@@ -2,268 +2,131 @@
 """
 scripts/risk/normalize_findings.py
 
-Normalize Checkov, Trivy, and Policy-as-Code findings into a compact
-internal schema for risk scoring.
+Normalizes findings from Checkov and Policy-as-Code into a unified schema for the Finding Enrichment Engine.
+Ignores Trivy completely. Generates stable FIND-000001 IDs.
 
-Usage:
-    python scripts/risk/normalize_findings.py <SCAN_ID>
-
-Input:
-    reports/static/<SCAN_ID>/combined/static-analysis-evidence.json
-    (fallback: individual evidence files)
-    reports/policy/<SCAN_ID>/policy-evidence.json
-
-Output:
-    reports/risk/<SCAN_ID>/normalized-findings.json
+Usage: python scripts/risk/normalize_findings.py <SCAN_ID>
 """
 
 import argparse
-import json
-import os
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(ROOT))
-
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(ROOT_DIR))
 from scripts.utils.evidence import safe_read_json, safe_write_json, utc_now_iso
 
+def main():
+    parser = argparse.ArgumentParser(description="Normalize findings for enrichment.")
+    parser.add_argument("scan_id", help="The unique SCAN_ID")
+    args = parser.parse_args()
+    scan_id = args.scan_id
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+    static_combined_path = ROOT_DIR / "reports" / "static" / scan_id / "combined" / "static-analysis-evidence.json"
+    risk_dir = ROOT_DIR / "reports" / "risk" / scan_id
+    risk_dir.mkdir(parents=True, exist_ok=True)
 
-def _counter():
-    """Sequential FIND-NNNNNN generator."""
-    n = 0
-    while True:
-        n += 1
-        yield f"FIND-{n:06d}"
+    warnings = []
+    checkov_findings_raw = []
+    policy_findings_raw = []
 
+    static_data = safe_read_json(str(static_combined_path))
+    if isinstance(static_data, dict):
+        checkov_findings_raw = static_data.get("checkov_findings", [])
+        policy_section = static_data.get("policy_as_code", {})
+        policy_findings_raw = policy_section.get("violations", [])
+    else:
+        warnings.append(f"Could not load static analysis evidence at {static_combined_path}")
 
-def _sev(raw) -> str:
-    if not raw or not isinstance(raw, str):
-        return "UNKNOWN"
-    return raw.strip().upper() or "UNKNOWN"
-
-
-# ---------------------------------------------------------------------------
-# Checkov normalizer
-# ---------------------------------------------------------------------------
-
-def normalize_checkov(findings: list, scan_id: str, id_gen) -> list[dict]:
     normalized = []
-    for f in findings:
-        if not isinstance(f, dict):
-            continue
-        fid = next(id_gen)
+    finding_counter = 1
+
+    # 1. Normalize Checkov findings
+    for cf in checkov_findings_raw:
+        fid = f"FIND-{finding_counter:06d}"
+        finding_counter += 1
+        
+        orig_sev = cf.get("severity", "UNKNOWN")
+        sev = orig_sev if orig_sev and orig_sev != "NONE" else "UNKNOWN"
+        
         normalized.append({
             "finding_id": fid,
             "scan_id": scan_id,
             "source_tool": "checkov",
-            "source_rule_id": f.get("check_id", f.get("rule_id", "UNKNOWN")),
-            "source_severity": _sev(f.get("severity", f.get("enriched_severity"))),
-            "title": f.get("check_name", f.get("rule_name", "")),
-            "description": f.get("check_name", f.get("description", "")),
-            "resource": f.get("resource", ""),
-            "resource_type": f.get("resource_type", _infer_resource_type(f.get("resource", ""))),
-            "file_path": f.get("file_path", ""),
-            "line_start": f.get("file_line_range", [None, None])[0] if isinstance(f.get("file_line_range"), list) and len(f.get("file_line_range", [])) >= 1 else f.get("start_line"),
-            "line_end": f.get("file_line_range", [None, None])[1] if isinstance(f.get("file_line_range"), list) and len(f.get("file_line_range", [])) >= 2 else f.get("end_line"),
-            "raw_finding_ref": f.get("finding_id", f.get("check_id", "")),
+            "source_rule_id": cf.get("check_id", "UNKNOWN"),
+            "title": cf.get("check_name", "No Title"),
+            "description": cf.get("check_name", ""),
+            "resource": cf.get("resource", "Unknown"),
+            "resource_type": cf.get("resource", "").split(".")[0] if "." in cf.get("resource", "") else "Unknown",
+            "file_path": cf.get("file_path", "Unknown"),
+            "line_start": None,
+            "line_end": None,
+            "scanner_severity": sev,
+            "scanner_severity_original": orig_sev,
             "policy": {
                 "policy_violation": False,
                 "policy_id": None,
-                "enforcement_level": "none",
+                "policy_severity": None,
+                "enforcement_level": "none"
             },
+            "raw_finding_ref": cf.get("finding_id", ""),
+            "normalization_notes": []
         })
-    return normalized
 
-
-# ---------------------------------------------------------------------------
-# Trivy normalizer
-# ---------------------------------------------------------------------------
-
-def normalize_trivy(findings: list, scan_id: str, id_gen) -> list[dict]:
-    normalized = []
-    for f in findings:
-        if not isinstance(f, dict):
-            continue
-        fid = next(id_gen)
-        normalized.append({
-            "finding_id": fid,
-            "scan_id": scan_id,
-            "source_tool": "trivy",
-            "source_rule_id": f.get("rule_id", f.get("MisconfID", f.get("ID", "UNKNOWN"))),
-            "source_severity": _sev(f.get("severity", f.get("Severity"))),
-            "title": f.get("rule_name", f.get("Title", "")),
-            "description": f.get("description", f.get("Description", f.get("message", f.get("Message", "")))),
-            "resource": f.get("resource", f.get("Target", "")),
-            "resource_type": f.get("resource_type", _infer_resource_type(f.get("resource", f.get("Target", "")))),
-            "file_path": f.get("file_path", f.get("target_file", "")),
-            "line_start": f.get("start_line", f.get("StartLine")),
-            "line_end": f.get("end_line", f.get("EndLine")),
-            "raw_finding_ref": f.get("finding_id", f.get("rule_id", "")),
-            "policy": {
-                "policy_violation": False,
-                "policy_id": None,
-                "enforcement_level": "none",
-            },
-        })
-    return normalized
-
-
-# ---------------------------------------------------------------------------
-# Policy-as-Code normalizer
-# ---------------------------------------------------------------------------
-
-def normalize_policy(violations: list, scan_id: str, id_gen) -> list[dict]:
-    normalized = []
-    for v in violations:
-        if not isinstance(v, dict):
-            continue
-        fid = next(id_gen)
-        policy_id = v.get("policy_id", "UNKNOWN")
-        enforcement = _infer_enforcement_level(v)
+    # 2. Normalize Policy-as-Code findings
+    for pf in policy_findings_raw:
+        fid = f"FIND-{finding_counter:06d}"
+        finding_counter += 1
+        
+        orig_sev = pf.get("severity", "UNKNOWN")
+        sev = orig_sev if orig_sev and orig_sev != "NONE" else "UNKNOWN"
+        
         normalized.append({
             "finding_id": fid,
             "scan_id": scan_id,
             "source_tool": "policy",
-            "source_rule_id": policy_id,
-            "source_severity": _sev(v.get("severity")),
-            "title": v.get("title", v.get("message", "")),
-            "description": v.get("reason", v.get("message", "")),
-            "resource": v.get("resource", ""),
-            "resource_type": v.get("resource_type", _infer_resource_type(v.get("resource", ""))),
-            "file_path": v.get("input_file", ""),
+            "source_rule_id": pf.get("policy_id", "UNKNOWN"),
+            "title": pf.get("title", pf.get("message", "No Title")),
+            "description": pf.get("message", pf.get("reason", "")),
+            "resource": pf.get("resource", "Unknown"),
+            "resource_type": pf.get("resource_type", "Unknown"),
+            "file_path": pf.get("input_file", "Unknown"),
             "line_start": None,
             "line_end": None,
-            "raw_finding_ref": v.get("policy_id", ""),
+            "scanner_severity": None,
+            "scanner_severity_original": None,
             "policy": {
                 "policy_violation": True,
-                "policy_id": policy_id,
-                "enforcement_level": enforcement,
+                "policy_id": pf.get("policy_id", "UNKNOWN"),
+                "policy_severity": sev,
+                "enforcement_level": pf.get("enforcement_level", "advisory")
             },
+            "raw_finding_ref": "",
+            "normalization_notes": []
         })
-    return normalized
 
-
-def _infer_enforcement_level(violation: dict) -> str:
-    """Infer enforcement level from violation metadata."""
-    sev = _sev(violation.get("severity"))
-    if sev in ("CRITICAL", "HIGH"):
-        return "hard_mandatory"
-    if sev == "MEDIUM":
-        return "soft_mandatory"
-    return "advisory"
-
-
-def _infer_resource_type(resource: str) -> str:
-    """Best-effort resource type from resource string like aws_security_group.foo."""
-    if not resource:
-        return ""
-    parts = resource.split(".")
-    return parts[0] if parts else ""
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-def main():
-    parser = argparse.ArgumentParser(description="Normalize scanner findings for risk scoring.")
-    parser.add_argument("scan_id", help="SCAN_ID for this pipeline run")
-    args = parser.parse_args()
-    scan_id = args.scan_id
-
-    report_dir = ROOT / "reports" / "risk" / scan_id
-    report_dir.mkdir(parents=True, exist_ok=True)
-
-    warnings: list[str] = []
-    id_gen = _counter()
-
-    # ---- Load combined evidence ----
-    combined_path = ROOT / "reports" / "static" / scan_id / "combined" / "static-analysis-evidence.json"
-    combined = safe_read_json(str(combined_path))
-
-    checkov_findings = []
-    trivy_findings = []
-    policy_violations = []
-
-    if isinstance(combined, dict):
-        checkov_findings = combined.get("checkov_findings", [])
-        trivy_findings = combined.get("trivy_findings", [])
-        pac = combined.get("policy_as_code", {})
-        if isinstance(pac, dict):
-            policy_violations = pac.get("violations", [])
-        print(f"[normalize] Loaded combined evidence from {combined_path}")
-    else:
-        warnings.append(f"Combined evidence not found at {combined_path}; trying individual files.")
-        print(f"[normalize] WARNING: {warnings[-1]}")
-
-        # Fallback: individual Checkov evidence
-        ck_path = ROOT / "reports" / "static" / scan_id / "checkov" / "checkov-evidence.json"
-        ck = safe_read_json(str(ck_path))
-        if isinstance(ck, dict):
-            checkov_findings = ck.get("findings", [])
-            print(f"[normalize] Loaded {len(checkov_findings)} Checkov findings from {ck_path}")
-        else:
-            warnings.append(f"Checkov evidence not found at {ck_path}")
-            print(f"[normalize] WARNING: {warnings[-1]}")
-
-        # Fallback: individual Trivy evidence
-        tr_path = ROOT / "reports" / "static" / scan_id / "trivy" / "trivy-evidence.json"
-        tr = safe_read_json(str(tr_path))
-        if isinstance(tr, dict):
-            trivy_findings = tr.get("findings", [])
-            print(f"[normalize] Loaded {len(trivy_findings)} Trivy findings from {tr_path}")
-        else:
-            warnings.append(f"Trivy evidence not found at {tr_path}")
-            print(f"[normalize] WARNING: {warnings[-1]}")
-
-    # Fallback: policy evidence if not in combined
-    if not policy_violations:
-        pol_path = ROOT / "reports" / "policy" / scan_id / "policy-evidence.json"
-        pol = safe_read_json(str(pol_path))
-        if isinstance(pol, dict):
-            policy_violations = pol.get("violations", [])
-            print(f"[normalize] Loaded {len(policy_violations)} policy violations from {pol_path}")
-        else:
-            warnings.append(f"Policy evidence not found at {pol_path}")
-            print(f"[normalize] WARNING: {warnings[-1]}")
-
-    # ---- Normalize ----
-    all_findings = []
-    all_findings.extend(normalize_checkov(checkov_findings, scan_id, id_gen))
-    all_findings.extend(normalize_trivy(trivy_findings, scan_id, id_gen))
-    all_findings.extend(normalize_policy(policy_violations, scan_id, id_gen))
-
-    output = {
+    output_data = {
         "metadata": {
             "scan_id": scan_id,
             "generated_at": utc_now_iso(),
-            "finding_count": len(all_findings),
-            "source_counts": {
-                "checkov": len(checkov_findings),
-                "trivy": len(trivy_findings),
-                "policy": len(policy_violations),
-            },
-            "warnings": warnings,
+            "tool": "normalize_findings.py",
+            "active_static_scanner": "checkov",
+            "trivy_used": False,
+            "checkov_findings": len(checkov_findings_raw),
+            "policy_findings": len(policy_findings_raw),
+            "warnings": warnings
         },
-        "findings": all_findings,
+        "findings": normalized
     }
 
-    out_path = str(report_dir / "normalized-findings.json")
-    safe_write_json(out_path, output)
+    out_path = risk_dir / "normalized-findings.json"
+    safe_write_json(str(out_path), output_data)
 
-    print(f"[normalize] SCAN_ID         = {scan_id}")
-    print(f"[normalize] Checkov         = {len(checkov_findings)}")
-    print(f"[normalize] Trivy           = {len(trivy_findings)}")
-    print(f"[normalize] Policy          = {len(policy_violations)}")
-    print(f"[normalize] Total findings  = {len(all_findings)}")
-    print(f"[normalize] Output          = {out_path}")
-
+    print(f"[normalize_findings] SCAN_ID = {scan_id}")
+    print(f"[normalize_findings] Normalized {len(checkov_findings_raw)} Checkov findings.")
+    print(f"[normalize_findings] Normalized {len(policy_findings_raw)} Policy findings.")
+    print(f"[normalize_findings] Ignored Trivy findings.")
+    print(f"[normalize_findings] Output = {out_path}")
 
 if __name__ == "__main__":
     main()

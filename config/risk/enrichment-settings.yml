@@ -1,0 +1,23 @@
+model:
+  default_openai_model: gpt-4.1-nano
+  temperature: 0
+  batch_size: 10
+  max_output_tokens: 1500
+
+ai_usage:
+  fill_missing_severity_only: true
+  enrich_references_for_all_findings: true
+  do_not_override_existing_severity: true
+
+standards:
+  primary:
+    - AWS Foundational Security Best Practices
+    - CIS AWS Foundations Benchmark
+  broader_context:
+    - CIS Controls v8
+  governance:
+    - AWS Resource Tagging
+
+fallback:
+  ai_failure_final_severity: UNKNOWN
+  ai_failure_requires_review: true

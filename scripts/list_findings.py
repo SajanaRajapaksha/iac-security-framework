@@ -2,7 +2,7 @@
 """
 scripts/list_findings.py
 
-A utility script to list all findings from each component (Checkov, Trivy, and Policy-as-Code)
+A utility script to list all findings from each component (Checkov, Policy-as-Code)
 for a given SCAN_ID.
 
 Usage:
@@ -62,26 +62,7 @@ def main():
             print(f"           Resource: {resource}")
             print(f"           File:     {file_path}\n")
 
-    # 2. Trivy Findings
-    trivy_findings = data.get("trivy_findings", [])
-    print(f"--- TRIVY FINDINGS ({len(trivy_findings)}) ---")
-    if not trivy_findings:
-        print("  No Trivy misconfigurations found.\n")
-    else:
-        for i, finding in enumerate(trivy_findings, 1):
-            # Findings in the combined report come from scripts/trivy_scan.py, which
-            # normalizes Trivy output into a stable schema. Handle both old and new schemas.
-            severity = finding.get("severity", finding.get("Severity", "UNKNOWN"))
-            check_id = finding.get("rule_id", finding.get("MisconfID", finding.get("ID", finding.get("id", "UNKNOWN"))))
-            title = finding.get("rule_name", finding.get("Title", finding.get("title", "No Title")))
-            resource = finding.get("resource", finding.get("Target", "Unknown Resource"))
-            file_path = finding.get("file_path", finding.get("target_file", "Unknown File"))
-            
-            print(f"[{severity:^8}] {check_id}: {title}")
-            print(f"           Target:   {resource}")
-            print(f"           File:     {file_path}\n")
-
-    # 3. Policy-as-Code Findings
+    # 2. Policy-as-Code Findings
     policy_section = data.get("policy_as_code", {})
     policy_violations = policy_section.get("violations", [])
     print(f"--- POLICY-AS-CODE VIOLATIONS ({len(policy_violations)}) ---")
@@ -104,7 +85,6 @@ def main():
     print(f"============================================================")
     print("Summary:")
     print(f"  Checkov Misconfigurations: {len(checkov_findings)}")
-    print(f"  Trivy Misconfigurations:   {len(trivy_findings)}")
     print(f"  Policy-as-Code Violations: {len(policy_violations)}")
     print(f"============================================================")
 

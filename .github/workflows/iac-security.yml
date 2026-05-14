@@ -100,15 +100,7 @@ jobs:
           echo "--- Checkov version ---"
           checkov --version
 
-      - name: Install Trivy
-        run: |
-          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
-          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
-          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
-          sudo apt-get update
-          sudo apt-get install -y trivy
-          echo "--- Trivy version ---"
-          trivy --version
+
 
       - name: Install Conftest
         run: |
@@ -158,20 +150,7 @@ jobs:
           echo "  SCAN_ID = $SCAN_ID"
           echo "========================================"
 
-      # ================================================================
-      # STAGE 6: TRIVY CONFIG SCAN (secondary scanner)
-      # ================================================================
 
-      - name: "Stage 6: Trivy config scan"
-        id: trivy_scan
-        if: steps.terraform_validation.outcome == 'success'
-        continue-on-error: true
-        run: python scripts/trivy_scan.py
-
-      - name: "Stage 6 (skipped): Trivy scan skipped — validation failed"
-        if: steps.terraform_validation.outcome != 'success'
-        run: |
-          echo "  Trivy scan SKIPPED — Terraform validation failed"
 
       # ================================================================
       # STAGE 7: COMBINED EVIDENCE REPORT
@@ -222,54 +201,38 @@ jobs:
         run: python scripts/list_findings.py ${{ steps.scan.outputs.scan_id }}
 
       # ================================================================
-      # STAGE 12-20: CIS-DRIVEN AI-ASSISTED RISK SCORING
+      # STAGE 12-17: FINDING ENRICHMENT ENGINE
       # ================================================================
 
-      - name: "Stage 12: Normalize findings for risk scoring"
+      - name: "Stage 12: Normalize Checkov and policy findings"
         if: steps.terraform_validation.outcome == 'success'
         run: python scripts/risk/normalize_findings.py "$SCAN_ID"
 
-      - name: "Stage 13: Deterministically map known findings"
-        if: steps.terraform_validation.outcome == 'success'
-        run: python scripts/risk/deterministic_map_known_findings.py "$SCAN_ID"
-
-      - name: "Stage 14: AI-map unmapped findings to CIS"
+      - name: "Stage 13: AI-enrich findings"
         if: steps.terraform_validation.outcome == 'success'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4.1-nano' }}
-        run: python scripts/risk/ai_map_unmapped_findings.py "$SCAN_ID"
+        run: python scripts/risk/ai_enrich_findings.py "$SCAN_ID"
 
-      - name: "Stage 15: Validate CIS mappings"
+      - name: "Stage 14: Validate enriched findings"
         if: steps.terraform_validation.outcome == 'success'
-        run: python scripts/risk/validate_cis_mapping.py "$SCAN_ID"
+        run: python scripts/risk/validate_enriched_findings.py "$SCAN_ID"
 
-      - name: "Stage 16: Merge CIS mappings"
+      - name: "Stage 15: Render enrichment summary"
         if: steps.terraform_validation.outcome == 'success'
-        run: python scripts/risk/merge_mappings.py "$SCAN_ID"
+        run: python scripts/risk/render_enrichment_summary.py "$SCAN_ID"
 
-      - name: "Stage 17: Calculate pre-deployment risk score"
+      - name: "Stage 16: Hash enrichment evidence"
         if: steps.terraform_validation.outcome == 'success'
-        run: python scripts/risk/calculate_risk_score.py "$SCAN_ID"
+        run: python scripts/risk/hash_enrichment_evidence.py "$SCAN_ID"
 
-      - name: "Stage 18: Render risk summary"
-        if: steps.terraform_validation.outcome == 'success'
-        run: python scripts/risk/render_risk_summary.py "$SCAN_ID"
-
-      - name: "Stage 19: Hash risk evidence"
-        if: steps.terraform_validation.outcome == 'success'
-        run: python scripts/risk/hash_risk_evidence.py "$SCAN_ID"
-
-      # ================================================================
-      # STAGE 21: RISK GATE ENFORCEMENT
-      # ================================================================
-
-      - name: "Stage 20: Enforce advisory risk gate"
+      - name: "Stage 17: Advisory enrichment gate"
         if: steps.terraform_validation.outcome == 'success'
         env:
           ENFORCE_RISK_GATE: ${{ vars.ENFORCE_RISK_GATE || 'false' }}
           STRICT_RISK_GATE: ${{ vars.STRICT_RISK_GATE || 'false' }}
-        run: python scripts/risk/enforce_risk_gate.py "$SCAN_ID"
+        run: python scripts/risk/advisory_enrichment_gate.py "$SCAN_ID"
 
       # ================================================================
       # ARTIFACT UPLOAD (always — even on failure)
@@ -296,7 +259,7 @@ jobs:
           name: policy-reports-${{ steps.scan.outputs.scan_id }}
           path: reports/policy/${{ steps.scan.outputs.scan_id }}/
 
-      - name: Upload risk scoring reports
+      - name: Upload enrichment reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
