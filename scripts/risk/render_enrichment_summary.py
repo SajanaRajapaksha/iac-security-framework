@@ -148,6 +148,7 @@ def main():
     for f in findings:
         sev = f.get("final_severity", "UNKNOWN")
         print(f"[{sev}] {f.get('finding_id')}")
+        print(f"  Title              : {f.get('title', f.get('check_name', 'Unknown Title'))}")
         print(f"  Source Tool        : {f.get('source_tool')}")
         print(f"  Rule / Policy ID   : {f.get('source_rule_id')}")
         print(f"  Resource           : {f.get('resource')}")
