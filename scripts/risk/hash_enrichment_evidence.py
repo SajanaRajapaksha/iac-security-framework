@@ -23,7 +23,9 @@ ARTIFACTS = [
     "finding-enrichment-summary.json",
     "finding-enrichment-summary.md",
     "finding-enrichment-decision.json",
-    "ai-model-metadata.json"
+    "ai-model-metadata.json",
+    "predeployment-risk-score.json",
+    "predeployment-risk-score.md",
 ]
 
 def main():
@@ -66,8 +68,11 @@ def main():
         "artifact_hashes": hashes,
         "forensic_statement": (
             "AI was used for standards reference enrichment and to fill missing severities only. "
-            "Existing Checkov and policy severities were preserved. No numeric risk score was "
-            "calculated in this version."
+            "Existing Checkov and policy severities were preserved. "
+            "The pre-deployment risk score was calculated deterministically from enriched finding "
+            "severities and Terraform resource count. The score is normalized to a 0-1000 scale "
+            "using exponential decay, where higher values indicate better pre-deployment security "
+            "posture."
         )
     }
     

@@ -235,6 +235,14 @@ jobs:
         run: python scripts/risk/advisory_enrichment_gate.py "$SCAN_ID"
 
       # ================================================================
+      # STAGE 18: PRE-DEPLOYMENT RISK SCORING ENGINE
+      # ================================================================
+
+      - name: "Stage 18: Calculate pre-deployment risk score"
+        if: steps.terraform_validation.outcome == 'success'
+        run: python scripts/risk/calculate_predeployment_risk_score.py "$SCAN_ID"
+
+      # ================================================================
       # ARTIFACT UPLOAD (always — even on failure)
       # ================================================================
 
