@@ -313,3 +313,15 @@ jobs:
           echo "========================================"
           echo "  AWS authentication successful"
           echo "========================================"
+      
+      - name: Verify Terraform state bucket access
+        run: |
+          echo "Checking Terraform state bucket..."
+
+          aws s3api head-bucket \
+          --bucket "${{ vars.TF_STATE_BUCKET }}"
+
+          aws s3api get-bucket-versioning \
+          --bucket "${{ vars.TF_STATE_BUCKET }}"
+
+          echo "Terraform state bucket accessible."         
