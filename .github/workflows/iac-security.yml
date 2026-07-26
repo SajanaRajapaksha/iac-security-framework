@@ -278,3 +278,38 @@ jobs:
       # - AWS sandbox deployment
       # - Prowler runtime validation
       # - Forensic evidence package generation
+  # ================================================================
+  # AWS OIDC AUTHENTICATION TEST
+  # Temporary test job — verifies GitHub → AWS federation
+  # ================================================================
+
+  aws-oidc-test:
+    name: AWS OIDC Authentication Test
+    runs-on: ubuntu-latest
+
+    # Do not provide AWS authentication to pull-request workflows.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/dev'
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Configure AWS credentials using OIDC
+        uses: aws-actions/configure-aws-credentials@v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: iac-security-framework-oidc-test
+
+      - name: Verify AWS identity
+        run: |
+          echo "========================================"
+          echo "  AWS OIDC AUTHENTICATION TEST"
+          echo "========================================"
+
+          aws sts get-caller-identity
+
+          echo "========================================"
+          echo "  AWS authentication successful"
+          echo "========================================"
