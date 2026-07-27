@@ -393,7 +393,9 @@ jobs:
           echo "Verifying AWS OIDC authentication..."
           AWS_IDENTITY=$(aws sts get-caller-identity --output json)
           echo "$AWS_IDENTITY"
-          echo "aws_identity=$AWS_IDENTITY" >> "$GITHUB_OUTPUT"
+          # Compact to single line — GITHUB_OUTPUT does not support multi-line values
+          AWS_IDENTITY_COMPACT=$(echo "$AWS_IDENTITY" | jq -c '.')
+          echo "aws_identity=$AWS_IDENTITY_COMPACT" >> "$GITHUB_OUTPUT"
           echo "AWS authentication verified."
 
       # ================================================================
