@@ -128,12 +128,15 @@ reports/runtime/*.json
 reports/runtime/*.sarif
 reports/final/*.json
 reports/policy/*.json
+reports/deployment/SCAN-*/
+reports/deployment/*.json
 
 # BUT preserve directory structure via .gitkeep files
 !reports/static/.gitkeep
 !reports/runtime/.gitkeep
 !reports/final/.gitkeep
 !reports/policy/.gitkeep
+!reports/deployment/.gitkeep
 
 # =============================================================================
 # EVIDENCE (runtime-generated — do not commit evidence packages)

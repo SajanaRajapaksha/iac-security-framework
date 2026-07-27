@@ -2,10 +2,16 @@
 # IaC Security Framework — Full Pipeline
 #
 # Accepts a GitHub repository URL, clones it, discovers Terraform directories,
-# runs terraform fmt/init/validate, executes Checkov + Trivy static scanning,
+# runs terraform fmt/init/validate, executes Checkov static scanning,
 # normalizes findings with local severity mapping, generates combined forensic
-# evidence reports, generates Terraform plan JSON, runs custom Rego policies
-# via Conftest, and produces forensic-ready evidence at every stage.
+# evidence reports, runs custom Rego policies via Conftest, enriches findings,
+# calculates a pre-deployment risk score, and produces forensic-ready evidence
+# at every stage.
+#
+# A second job (terraform-plan) authenticates to AWS via OIDC, initialises a
+# scan-isolated S3 backend, generates a saved Terraform plan, validates
+# SCAN_ID resource tags, and produces deployment plan evidence — all without
+# ever running `terraform apply`.
 #
 # Static analysis is NON-BLOCKING — findings are preserved as evidence.
 # Policy-as-Code runs in ADVISORY mode by default — violations are recorded
@@ -37,6 +43,9 @@ jobs:
   security-pipeline:
     name: Security Pipeline
     runs-on: ubuntu-latest
+
+    outputs:
+      scan_id: ${{ steps.scan.outputs.scan_id }}
 
     steps:
       # ================================================================
@@ -243,6 +252,18 @@ jobs:
         run: python scripts/risk/calculate_predeployment_risk_score.py "$SCAN_ID"
 
       # ================================================================
+      # STAGE 19: PRESERVE EXACT SCANNED DEPLOYMENT SOURCE
+      # ================================================================
+
+      - name: "Stage 19: Upload scanned deployment source"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-source-${{ steps.scan.outputs.scan_id }}
+          path: repositories/cloned/${{ steps.scan.outputs.scan_id }}/
+          retention-days: 7
+
+      # ================================================================
       # ARTIFACT UPLOAD (always — even on failure)
       # ================================================================
 
@@ -275,53 +296,217 @@ jobs:
           path: reports/risk/${{ steps.scan.outputs.scan_id }}/
 
       # ---- Future stages (not yet implemented) ----
-      # - AWS sandbox deployment
       # - Prowler runtime validation
       # - Forensic evidence package generation
-  # ================================================================
-  # AWS OIDC AUTHENTICATION TEST
-  # Temporary test job — verifies GitHub → AWS federation
-  # ================================================================
 
-  aws-oidc-test:
-    name: AWS OIDC Authentication Test
+  # ====================================================================
+  # TERRAFORM PLAN JOB
+  #
+  # Authenticates to AWS via OIDC, initialises scan-isolated S3 backend,
+  # generates a saved Terraform plan, validates SCAN_ID resource tags,
+  # and produces deployment plan evidence.
+  #
+  # terraform apply is intentionally NOT implemented in this stage.
+  # ====================================================================
+
+  terraform-plan:
+    name: Terraform Plan
+    needs: security-pipeline
     runs-on: ubuntu-latest
 
-    # Do not provide AWS authentication to pull-request workflows.
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/dev'
+    # Only run on push to dev (never on PRs — no AWS creds for PRs).
+    if: >
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/dev'
 
     permissions:
       id-token: write
       contents: read
 
+    env:
+      SCAN_ID: ${{ needs.security-pipeline.outputs.scan_id }}
+      TF_VAR_scan_id: ${{ needs.security-pipeline.outputs.scan_id }}
+      TF_VAR_aws_region: ${{ vars.AWS_REGION }}
+
     steps:
-      - name: Configure AWS credentials using OIDC
+      # ================================================================
+      # SETUP
+      # ================================================================
+
+      - name: Checkout framework repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Print deployment parameters
+        run: |
+          echo "========================================"
+          echo "  TERRAFORM PLAN JOB"
+          echo "========================================"
+          echo "  SCAN_ID      = $SCAN_ID"
+          echo "  AWS_REGION   = ${{ vars.AWS_REGION }}"
+          echo "  STATE_BUCKET = ${{ vars.TF_STATE_BUCKET }}"
+          echo "  STATE_KEY    = research/$SCAN_ID/terraform.tfstate"
+          echo "========================================"
+
+      # ================================================================
+      # STAGE 19 (download): Retrieve exact scanned source
+      # ================================================================
+
+      - name: "Stage 19: Download scanned deployment source"
+        uses: actions/download-artifact@v4
+        with:
+          name: deployment-source-${{ env.SCAN_ID }}
+          path: deployment-source/
+
+      - name: Download scan metadata
+        uses: actions/download-artifact@v4
+        with:
+          name: scan-metadata-${{ env.SCAN_ID }}
+          path: repositories/metadata/${{ env.SCAN_ID }}/
+
+      # ================================================================
+      # STAGE 20: AWS OIDC AUTHENTICATION
+      # ================================================================
+
+      - name: "Stage 20: Authenticate to AWS via OIDC"
         uses: aws-actions/configure-aws-credentials@v6.2.3
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
-          role-session-name: iac-security-framework-oidc-test
+          role-session-name: terraform-plan-${{ env.SCAN_ID }}
 
-      - name: Verify AWS identity
+      - name: "Stage 20: Verify AWS identity"
+        id: aws_identity
         run: |
-          echo "========================================"
-          echo "  AWS OIDC AUTHENTICATION TEST"
-          echo "========================================"
+          echo "Verifying AWS OIDC authentication..."
+          AWS_IDENTITY=$(aws sts get-caller-identity --output json)
+          echo "$AWS_IDENTITY"
+          echo "aws_identity=$AWS_IDENTITY" >> "$GITHUB_OUTPUT"
+          echo "AWS authentication verified."
 
-          aws sts get-caller-identity
+      # ================================================================
+      # STAGE 21: DEPLOYMENT CONTRACT + BACKEND INIT
+      # ================================================================
 
-          echo "========================================"
-          echo "  AWS authentication successful"
-          echo "========================================"
-      
-      - name: Verify Terraform state bucket access
+      - name: "Stage 21a: Validate deployment contract"
+        id: contract
+        run: python scripts/deployment/validate_deployment_contract.py "$SCAN_ID"
+
+      - name: "Stage 21b: Determine Terraform deployment root"
+        id: tf_root
         run: |
-          echo "Checking Terraform state bucket..."
+          # Read deployment root from contract validation output
+          DEPLOY_ROOT=$(python3 -c "
+import json, sys
+data = json.load(open('reports/deployment/${{ env.SCAN_ID }}/deployment-contract-validation.json'))
+print(data.get('deployment_root', ''))
+")
+          echo "deployment_root=$DEPLOY_ROOT" >> "$GITHUB_OUTPUT"
+          echo "Deployment root: $DEPLOY_ROOT"
 
-          aws s3api head-bucket \
-          --bucket "${{ vars.TF_STATE_BUCKET }}"
+      - name: "Stage 21c: Terraform init with scan-isolated S3 backend"
+        working-directory: ${{ steps.tf_root.outputs.deployment_root }}
+        run: |
+          terraform init \
+            -input=false \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="key=research/${{ env.SCAN_ID }}/terraform.tfstate" \
+            -backend-config="region=${{ vars.AWS_REGION }}" \
+            -backend-config="use_lockfile=true"
 
-          aws s3api get-bucket-versioning \
-          --bucket "${{ vars.TF_STATE_BUCKET }}"
+      # ================================================================
+      # STAGE 22: TERRAFORM PLAN (no apply)
+      # ================================================================
 
-          echo "Terraform state bucket accessible."         
+      - name: "Stage 22: Terraform plan"
+        id: tf_plan
+        working-directory: ${{ steps.tf_root.outputs.deployment_root }}
+        run: |
+          terraform plan \
+            -input=false \
+            -out=tfplan
+          echo "plan_exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: "Stage 22: Generate human-readable plan"
+        working-directory: ${{ steps.tf_root.outputs.deployment_root }}
+        run: terraform show -no-color tfplan > terraform-plan.txt
+
+      - name: "Stage 22: Generate JSON plan"
+        working-directory: ${{ steps.tf_root.outputs.deployment_root }}
+        run: terraform show -json tfplan > terraform-plan.json
+
+      - name: "Stage 22: Copy plan evidence to reports"
+        run: |
+          DEPLOY_DIR="reports/deployment/$SCAN_ID"
+          mkdir -p "$DEPLOY_DIR"
+          TF_ROOT="${{ steps.tf_root.outputs.deployment_root }}"
+          cp "$TF_ROOT/terraform-plan.txt" "$DEPLOY_DIR/terraform-plan.txt"
+          cp "$TF_ROOT/terraform-plan.json" "$DEPLOY_DIR/terraform-plan.json"
+          PLAN_SHA=$(sha256sum "$TF_ROOT/tfplan" | cut -d' ' -f1)
+          echo "$PLAN_SHA" > "$DEPLOY_DIR/terraform-plan.sha256"
+          echo "plan_sha256=$PLAN_SHA" >> "$GITHUB_OUTPUT"
+          echo "Plan SHA256: $PLAN_SHA"
+
+      # ================================================================
+      # STAGE 23: VALIDATE SCAN_ID RESOURCE TAGS
+      # ================================================================
+
+      - name: "Stage 23: Validate SCAN_ID resource tags"
+        id: tag_validation
+        run: |
+          python scripts/deployment/validate_plan_tags.py \
+            "$SCAN_ID" \
+            "${{ steps.tf_root.outputs.deployment_root }}/terraform-plan.json"
+
+      # ================================================================
+      # STAGE 24: GENERATE DEPLOYMENT PLAN EVIDENCE
+      # ================================================================
+
+      - name: "Stage 24a: Capture Terraform version"
+        id: tf_version
+        run: |
+          TF_VER=$(terraform version -json | python3 -c "import sys,json; print(json.load(sys.stdin)['terraform_version'])")
+          echo "tf_version=$TF_VER" >> "$GITHUB_OUTPUT"
+
+      - name: "Stage 24b: Generate deployment plan evidence"
+        run: |
+          python scripts/deployment/generate_deployment_evidence.py "$SCAN_ID" \
+            --deployment-root "${{ steps.tf_root.outputs.deployment_root }}" \
+            --plan-exit-code 0 \
+            --plan-sha256 "${{ steps.tf_plan.outputs.plan_sha256 }}" \
+            --tag-validation-status "PASS" \
+            --aws-identity-json '${{ steps.aws_identity.outputs.aws_identity }}' \
+            --terraform-version "${{ steps.tf_version.outputs.tf_version }}" \
+            --state-bucket "${{ vars.TF_STATE_BUCKET }}" \
+            --state-key "research/$SCAN_ID/terraform.tfstate"
+
+      - name: "Stage 24c: Hash deployment evidence"
+        run: |
+          python scripts/deployment/hash_deployment_evidence.py "$SCAN_ID" \
+            --plan-dir "${{ steps.tf_root.outputs.deployment_root }}"
+
+      # ================================================================
+      # ARTIFACT UPLOAD (always — preserve failure evidence)
+      # ================================================================
+
+      - name: Upload deployment evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-${{ env.SCAN_ID }}
+          retention-days: 7
+          path: |
+            ${{ steps.tf_root.outputs.deployment_root }}/tfplan
+            reports/deployment/${{ env.SCAN_ID }}/
