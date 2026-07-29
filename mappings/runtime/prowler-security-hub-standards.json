@@ -1,0 +1,53 @@
+{
+  "schema_version": "1.0",
+  "generated_for_prowler_version": "4.3.4",
+  "standards": {
+    "aws_fsbp": {
+      "name": "AWS Foundational Security Best Practices",
+      "version": "1.0.0"
+    },
+    "cis_aws": {
+      "name": "CIS AWS Foundations Benchmark",
+      "version": "3.0.0"
+    }
+  },
+  "checks": {
+    "ec2_securitygroup_allow_ingress_from_internet_to_tcp_port_22": {
+      "canonical_control": "NETWORK_PUBLIC_SSH",
+      "severity": "HIGH",
+      "severity_source": "AWS_FSBP_CONTROL",
+      "mappings": [
+        {
+          "standard": "AWS_FSBP",
+          "control_id": "EC2.13"
+        },
+        {
+          "standard": "CIS_AWS",
+          "requirement_id": "5.2"
+        }
+      ]
+    },
+    "s3_bucket_public_access": {
+      "canonical_control": "S3_PUBLIC_ACCESS",
+      "severity": "CRITICAL",
+      "severity_source": "AWS_FSBP_CONTROL",
+      "mappings": [
+        {
+          "standard": "AWS_FSBP",
+          "control_id": "S3.2"
+        }
+      ]
+    },
+    "s3_bucket_default_encryption": {
+      "canonical_control": "S3_DEFAULT_ENCRYPTION",
+      "severity": "MEDIUM",
+      "severity_source": "AWS_FSBP_CONTROL",
+      "mappings": [
+        {
+          "standard": "AWS_FSBP",
+          "control_id": "S3.4"
+        }
+      ]
+    }
+  }
+}
