@@ -215,17 +215,48 @@ def main() -> None:
     tf_root_relative = tf_root_entry.get("relative_path", ".")
 
     if not os.path.isdir(tf_root_path):
-        # Might be running in terraform-plan job with deployment-source prefix
-        alt_path = str(Path("deployment-source") / "repositories" / "cloned" / scan_id / tf_root_relative)
-        if os.path.isdir(alt_path):
-            tf_root_path = alt_path
+        # In the terraform-plan job, the deployment source artifact was downloaded
+        # to deployment-source/.  The artifact upload was:
+        #   path: repositories/cloned/<SCAN_ID>/
+        # so the repo contents land directly at deployment-source/ (the SCAN_ID
+        # prefix is stripped by the artifact mechanism).
+        #
+        # relative_path from discovery is relative to the clone root, e.g. "." or
+        # "modules/vpc".  So the actual path on the plan runner is:
+        #   deployment-source/<relative_path>
+        cwd = Path.cwd()
+
+        # Normalise relative_path — "." means the clone root itself
+        if tf_root_relative in (".", ""):
+            candidate = cwd / "deployment-source"
         else:
+            candidate = cwd / "deployment-source" / tf_root_relative
+
+        if candidate.is_dir():
+            tf_root_path = str(candidate)
+        else:
+            # Emit helpful diagnostics before failing
+            print(f"[deployment_contract] CWD = {cwd}", file=sys.stderr)
+            print(f"[deployment_contract] Expected original path : {tf_root_path}", file=sys.stderr)
+            print(f"[deployment_contract] Tried fallback path    : {candidate}", file=sys.stderr)
+            # List deployment-source/ contents to aid debugging
+            ds = cwd / "deployment-source"
+            if ds.is_dir():
+                children = [p.name for p in sorted(ds.iterdir())]
+                print(f"[deployment_contract] deployment-source/ contents: {children}", file=sys.stderr)
+            else:
+                print(f"[deployment_contract] deployment-source/ does not exist", file=sys.stderr)
+
             error_result = {
                 "scan_id": scan_id,
                 "generated_at": utc_now_iso(),
                 "status": "FAIL",
                 "error": "TERRAFORM_ROOT_NOT_FOUND",
-                "message": f"Terraform root directory not found at {tf_root_path}",
+                "message": (
+                    f"Terraform root not found. "
+                    f"Original path: {tf_root_entry.get('path', '')} | "
+                    f"Fallback tried: {candidate}"
+                ),
             }
             safe_write_json(str(deploy_dir / "deployment-contract-validation.json"), error_result)
             print(f"[deployment_contract] ERROR: TF root not found: {tf_root_path}", file=sys.stderr)
