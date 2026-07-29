@@ -302,11 +302,14 @@ jobs:
   # ====================================================================
   # TERRAFORM PLAN JOB
   #
-  # Authenticates to AWS via OIDC, initialises scan-isolated S3 backend,
-  # generates a saved Terraform plan, validates SCAN_ID resource tags,
-  # and produces deployment plan evidence.
+  # Authenticates to AWS via OIDC, initialises a scan-isolated S3 backend,
+  # injects SCAN_ID tags through AWS Provider environment variables
+  # (TF_AWS_DEFAULT_TAGS_scan-id and TF_AWS_DEFAULT_TAGS_managed-by),
+  # generates a saved Terraform plan, validates tag propagation,
+  # verifies source integrity and produces deployment plan evidence.
   #
-  # terraform apply is intentionally NOT implemented in this stage.
+  # The target Terraform source is NEVER modified.
+  # terraform apply is intentionally NOT implemented.
   # ====================================================================
 
   terraform-plan:
@@ -325,8 +328,6 @@ jobs:
 
     env:
       SCAN_ID: ${{ needs.security-pipeline.outputs.scan_id }}
-      TF_VAR_scan_id: ${{ needs.security-pipeline.outputs.scan_id }}
-      TF_VAR_aws_region: ${{ vars.AWS_REGION }}
 
     steps:
       # ================================================================
@@ -351,17 +352,19 @@ jobs:
 
       - name: Print deployment parameters
         run: |
-          echo "========================================"
+          echo "============================================================"
           echo "  TERRAFORM PLAN JOB"
-          echo "========================================"
+          echo "============================================================"
           echo "  SCAN_ID      = $SCAN_ID"
           echo "  AWS_REGION   = ${{ vars.AWS_REGION }}"
           echo "  STATE_BUCKET = ${{ vars.TF_STATE_BUCKET }}"
           echo "  STATE_KEY    = research/$SCAN_ID/terraform.tfstate"
-          echo "========================================"
+          echo "  TAG_MODE     = TF_AWS_DEFAULT_TAGS environment variables"
+          echo "  SOURCE_MODS  = NONE (target repo unchanged)"
+          echo "============================================================"
 
       # ================================================================
-      # STAGE 19 (download): Retrieve exact scanned source
+      # STAGE 19 (download): Retrieve exact scanned source + metadata
       # ================================================================
 
       - name: "Stage 19: Download scanned deployment source"
@@ -399,61 +402,95 @@ jobs:
           echo "AWS authentication verified."
 
       # ================================================================
-      # STAGE 21: DEPLOYMENT CONTRACT + BACKEND INIT
+      # STAGE 21a: DEPLOYMENT CONTRACT VALIDATION
+      # Checks: single root, resolvable path, .tf files, AWS provider.
+      # Does NOT require scan_id variable or default_tags in target repo.
       # ================================================================
 
       - name: "Stage 21a: Validate deployment contract"
-        id: contract
+        id: deployment_contract
         run: python scripts/deployment/validate_deployment_contract.py "$SCAN_ID"
 
-      - name: "Stage 21b: Determine Terraform deployment root"
-        id: tf_root
+      # ================================================================
+      # STAGE 21b: SOURCE INTEGRITY BASELINE (before init/plan)
+      # ================================================================
+
+      - name: "Stage 21b: Save source integrity baseline"
         run: |
-          # Read deployment root from contract validation output
-          DEPLOY_ROOT=$(python3 -c "
-          import json, sys
-          data = json.load(open('reports/deployment/${{ env.SCAN_ID }}/deployment-contract-validation.json'))
-          print(data.get('deployment_root', ''))
-          ")
-          echo "deployment_root=$DEPLOY_ROOT" >> "$GITHUB_OUTPUT"
-          echo "Deployment root: $DEPLOY_ROOT"
+          python scripts/deployment/validate_source_integrity.py \
+            "$SCAN_ID" \
+            "${{ steps.deployment_contract.outputs.deployment_root }}" \
+            --save
+
+      # ================================================================
+      # STAGE 21c: TERRAFORM INIT WITH SCAN-ISOLATED S3 BACKEND
+      # ================================================================
 
       - name: "Stage 21c: Terraform init with scan-isolated S3 backend"
-        working-directory: ${{ steps.tf_root.outputs.deployment_root }}
+        working-directory: ${{ steps.deployment_contract.outputs.deployment_root }}
         run: |
           terraform init \
             -input=false \
             -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
-            -backend-config="key=research/${{ env.SCAN_ID }}/terraform.tfstate" \
+            -backend-config="key=research/${SCAN_ID}/terraform.tfstate" \
             -backend-config="region=${{ vars.AWS_REGION }}" \
             -backend-config="use_lockfile=true"
 
       # ================================================================
-      # STAGE 22: TERRAFORM PLAN (no apply)
+      # STAGE 21d: VALIDATE AWS PROVIDER VERSION
+      # Requires AWS provider >= 5.62.0 for TF_AWS_DEFAULT_TAGS support.
       # ================================================================
 
-      - name: "Stage 22: Terraform plan"
-        id: tf_plan
-        working-directory: ${{ steps.tf_root.outputs.deployment_root }}
+      - name: "Stage 21d: Validate AWS provider version"
         run: |
-          terraform plan \
-            -input=false \
-            -out=tfplan
-          echo "plan_exit_code=$?" >> "$GITHUB_OUTPUT"
+          python scripts/deployment/validate_aws_provider_version.py \
+            "$SCAN_ID" \
+            "${{ steps.deployment_contract.outputs.deployment_root }}"
+
+      # ================================================================
+      # STAGE 22: TERRAFORM PLAN WITH FRAMEWORK TAG INJECTION
+      #
+      # Tags are injected using AWS Provider environment variables.
+      # The `env` command is required because TF_AWS_DEFAULT_TAGS_scan-id
+      # contains a hyphen which is invalid in normal shell variable names.
+      #
+      # The target Terraform source is NOT modified.
+      # No _override.tf or generated provider blocks are created.
+      # ================================================================
+
+      - name: "Stage 22: Terraform plan with framework tag injection"
+        id: tf_plan
+        working-directory: ${{ steps.deployment_contract.outputs.deployment_root }}
+        run: |
+          echo "============================================================"
+          echo "  TERRAFORM PLAN WITH FRAMEWORK TAG INJECTION"
+          echo "============================================================"
+          echo "  SCAN_ID     : ${SCAN_ID}"
+          echo "  scan-id     : ${SCAN_ID}"
+          echo "  managed-by  : iac-security-framework"
+          echo "============================================================"
+
+          env \
+            "TF_AWS_DEFAULT_TAGS_scan-id=${SCAN_ID}" \
+            "TF_AWS_DEFAULT_TAGS_managed-by=iac-security-framework" \
+            terraform plan \
+              -input=false \
+              -out=tfplan
 
       - name: "Stage 22: Generate human-readable plan"
-        working-directory: ${{ steps.tf_root.outputs.deployment_root }}
+        working-directory: ${{ steps.deployment_contract.outputs.deployment_root }}
         run: terraform show -no-color tfplan > terraform-plan.txt
 
       - name: "Stage 22: Generate JSON plan"
-        working-directory: ${{ steps.tf_root.outputs.deployment_root }}
+        working-directory: ${{ steps.deployment_contract.outputs.deployment_root }}
         run: terraform show -json tfplan > terraform-plan.json
 
       - name: "Stage 22: Copy plan evidence to reports"
+        id: plan_evidence
         run: |
           DEPLOY_DIR="reports/deployment/$SCAN_ID"
           mkdir -p "$DEPLOY_DIR"
-          TF_ROOT="${{ steps.tf_root.outputs.deployment_root }}"
+          TF_ROOT="${{ steps.deployment_contract.outputs.deployment_root }}"
           cp "$TF_ROOT/terraform-plan.txt" "$DEPLOY_DIR/terraform-plan.txt"
           cp "$TF_ROOT/terraform-plan.json" "$DEPLOY_DIR/terraform-plan.json"
           PLAN_SHA=$(sha256sum "$TF_ROOT/tfplan" | cut -d' ' -f1)
@@ -462,45 +499,97 @@ jobs:
           echo "Plan SHA256: $PLAN_SHA"
 
       # ================================================================
-      # STAGE 23: VALIDATE SCAN_ID RESOURCE TAGS
+      # STAGE 22e: SOURCE INTEGRITY VERIFICATION (after plan)
+      # Confirms no .tf source files were modified during init or plan.
       # ================================================================
 
-      - name: "Stage 23: Validate SCAN_ID resource tags"
+      - name: "Stage 22e: Verify source integrity after plan"
+        run: |
+          python scripts/deployment/validate_source_integrity.py \
+            "$SCAN_ID" \
+            "${{ steps.deployment_contract.outputs.deployment_root }}" \
+            --verify
+
+      # ================================================================
+      # STAGE 23: VALIDATE SCAN_ID RESOURCE TAGS IN PLAN
+      # Strict validation — unknown/incorrect tag values are failures.
+      # ================================================================
+
+      - name: "Stage 23: Validate framework tags in plan"
         id: tag_validation
         run: |
           python scripts/deployment/validate_plan_tags.py \
             "$SCAN_ID" \
-            "${{ steps.tf_root.outputs.deployment_root }}/terraform-plan.json"
+            "${{ steps.deployment_contract.outputs.deployment_root }}/terraform-plan.json"
 
       # ================================================================
       # STAGE 24: GENERATE DEPLOYMENT PLAN EVIDENCE
       # ================================================================
 
-      - name: "Stage 24a: Capture Terraform version"
-        id: tf_version
+      - name: "Stage 24a: Capture Terraform and provider versions"
+        id: versions
         run: |
           TF_VER=$(terraform version -json | python3 -c "import sys,json; print(json.load(sys.stdin)['terraform_version'])")
           echo "tf_version=$TF_VER" >> "$GITHUB_OUTPUT"
 
+          AWS_PROV_VER=$(python3 -c "
+          import json, sys
+          data = json.load(open('reports/deployment/${{ env.SCAN_ID }}/aws-provider-validation.json'))
+          print(data.get('selected_version', 'unknown'))
+          ")
+          echo "aws_provider_version=$AWS_PROV_VER" >> "$GITHUB_OUTPUT"
+
+          TAG_STATUS=$(python3 -c "
+          import json, sys
+          data = json.load(open('reports/deployment/${{ env.SCAN_ID }}/tag-validation.json'))
+          print(data.get('status', 'UNKNOWN'))
+          " 2>/dev/null || echo "UNKNOWN")
+          echo "tag_validation_status=$TAG_STATUS" >> "$GITHUB_OUTPUT"
+
+          TAGGABLE=$(python3 -c "
+          import json
+          data = json.load(open('reports/deployment/${{ env.SCAN_ID }}/tag-validation.json'))
+          print(data.get('taggable_resources_checked', 0))
+          " 2>/dev/null || echo "0")
+          echo "taggable_checked=$TAGGABLE" >> "$GITHUB_OUTPUT"
+
+          RES_FAILED=$(python3 -c "
+          import json
+          data = json.load(open('reports/deployment/${{ env.SCAN_ID }}/tag-validation.json'))
+          print(data.get('resources_failed', 0))
+          " 2>/dev/null || echo "0")
+          echo "resources_failed=$RES_FAILED" >> "$GITHUB_OUTPUT"
+
+          INTEGRITY_STATUS=$(python3 -c "
+          import json
+          data = json.load(open('reports/deployment/${{ env.SCAN_ID }}/deployment-source-integrity.json'))
+          print(data.get('status', 'UNKNOWN'))
+          " 2>/dev/null || echo "UNKNOWN")
+          echo "source_integrity_status=$INTEGRITY_STATUS" >> "$GITHUB_OUTPUT"
+
       - name: "Stage 24b: Generate deployment plan evidence"
         run: |
           python scripts/deployment/generate_deployment_evidence.py "$SCAN_ID" \
-            --deployment-root "${{ steps.tf_root.outputs.deployment_root }}" \
+            --deployment-root "${{ steps.deployment_contract.outputs.deployment_root }}" \
             --plan-exit-code 0 \
-            --plan-sha256 "${{ steps.tf_plan.outputs.plan_sha256 }}" \
-            --tag-validation-status "PASS" \
+            --plan-sha256 "${{ steps.plan_evidence.outputs.plan_sha256 }}" \
+            --tag-validation-status "${{ steps.versions.outputs.tag_validation_status }}" \
+            --source-integrity-status "${{ steps.versions.outputs.source_integrity_status }}" \
+            --aws-provider-version "${{ steps.versions.outputs.aws_provider_version }}" \
             --aws-identity-json '${{ steps.aws_identity.outputs.aws_identity }}' \
-            --terraform-version "${{ steps.tf_version.outputs.tf_version }}" \
+            --terraform-version "${{ steps.versions.outputs.tf_version }}" \
             --state-bucket "${{ vars.TF_STATE_BUCKET }}" \
-            --state-key "research/$SCAN_ID/terraform.tfstate"
+            --state-key "research/$SCAN_ID/terraform.tfstate" \
+            --taggable-checked "${{ steps.versions.outputs.taggable_checked }}" \
+            --resources-failed "${{ steps.versions.outputs.resources_failed }}"
 
       - name: "Stage 24c: Hash deployment evidence"
         run: |
           python scripts/deployment/hash_deployment_evidence.py "$SCAN_ID" \
-            --plan-dir "${{ steps.tf_root.outputs.deployment_root }}"
+            --plan-dir "${{ steps.deployment_contract.outputs.deployment_root }}"
 
       # ================================================================
-      # ARTIFACT UPLOAD (always — preserve failure evidence)
+      # ARTIFACT UPLOAD (always — preserve failure evidence too)
       # ================================================================
 
       - name: Upload deployment evidence
@@ -510,5 +599,6 @@ jobs:
           name: terraform-plan-${{ env.SCAN_ID }}
           retention-days: 7
           path: |
-            ${{ steps.tf_root.outputs.deployment_root }}/tfplan
+            ${{ steps.deployment_contract.outputs.deployment_root }}/tfplan
             reports/deployment/${{ env.SCAN_ID }}/
+

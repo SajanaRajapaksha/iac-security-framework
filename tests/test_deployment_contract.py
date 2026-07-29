@@ -2,13 +2,14 @@
 """
 tests/test_deployment_contract.py
 
-Unit tests for the deployment contract validator.
+Unit tests for the rewritten deployment contract validator.
+The validator no longer checks for scan_id variable or default_tags in
+the target Terraform source — tags are injected by environment variables.
 
 Run:  python -m pytest tests/test_deployment_contract.py -v
 """
 
 import json
-import os
 import shutil
 import sys
 from pathlib import Path
@@ -19,11 +20,12 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from scripts.deployment.validate_deployment_contract import (
-    read_all_tf_content,
-    validate_contract,
+    detect_aws_provider,
+    find_tf_files,
+    resolve_deployment_root,
 )
 
-SAMPLE_SCAN = "SCAN-TEST-CONTRACT"
+SCAN_ID = "SCAN-CTEST01"
 
 
 # ---------------------------------------------------------------------------
@@ -31,187 +33,158 @@ SAMPLE_SCAN = "SCAN-TEST-CONTRACT"
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
-def setup_and_cleanup(tmp_path, monkeypatch):
-    """Set up temp directories and clean up after each test."""
+def cleanup(monkeypatch):
     monkeypatch.chdir(ROOT)
-    # Clean up any leftover report dirs
-    deploy_dir = ROOT / "reports" / "deployment" / SAMPLE_SCAN
+    deploy_dir = ROOT / "reports" / "deployment" / SCAN_ID
     deploy_dir.mkdir(parents=True, exist_ok=True)
     yield
-    shutil.rmtree(str(ROOT / "reports" / "deployment" / SAMPLE_SCAN), ignore_errors=True)
+    shutil.rmtree(str(ROOT / "reports" / "deployment" / SCAN_ID), ignore_errors=True)
 
 
-def _create_tf_root(tmp_path: Path, files: dict[str, str]) -> str:
-    """Create a temp Terraform root with the given filename->content mapping."""
-    tf_dir = tmp_path / "tf_root"
-    tf_dir.mkdir(parents=True, exist_ok=True)
-    for name, content in files.items():
-        (tf_dir / name).write_text(content, encoding="utf-8")
-    return str(tf_dir)
+def _make_discovery(tf_dirs: list[dict]) -> dict:
+    return {"terraform_directories": tf_dirs}
+
+
+def _write_discovery(tmp_path: Path, tf_dirs: list[dict], scan_id: str = SCAN_ID) -> None:
+    meta = tmp_path / "repositories" / "metadata" / scan_id
+    meta.mkdir(parents=True)
+    (meta / "terraform-directories.json").write_text(
+        json.dumps(_make_discovery(tf_dirs))
+    )
 
 
 # ---------------------------------------------------------------------------
-# Valid contract
+# resolve_deployment_root
 # ---------------------------------------------------------------------------
 
-VALID_VARIABLES_TF = '''
-variable "scan_id" {
-  description = "IaC Security Framework scan identifier"
-  type        = string
-}
+class TestResolveDeploymentRoot:
+    def test_root_level_config(self, tmp_path):
+        """relative_path='.' → deployment-source/"""
+        ds = tmp_path / "deployment-source"
+        ds.mkdir()
+        result = resolve_deployment_root(SCAN_ID, ".", tmp_path)
+        assert result == ds
 
-variable "aws_region" {
-  description = "AWS deployment region"
-  type        = string
-}
-'''
+    def test_nested_config(self, tmp_path):
+        """relative_path='terraform/aws' → deployment-source/terraform/aws/"""
+        nested = tmp_path / "deployment-source" / "terraform" / "aws"
+        nested.mkdir(parents=True)
+        result = resolve_deployment_root(SCAN_ID, "terraform/aws", tmp_path)
+        assert result == nested
 
-VALID_PROVIDER_TF = '''
-provider "aws" {
-  region = var.aws_region
+    def test_empty_relative_path(self, tmp_path):
+        """relative_path='' treated same as '.'"""
+        ds = tmp_path / "deployment-source"
+        ds.mkdir()
+        result = resolve_deployment_root(SCAN_ID, "", tmp_path)
+        assert result == ds
 
-  default_tags {
-    tags = {
-      scan-id    = var.scan_id
-      managed-by = "iac-security-framework"
-    }
-  }
-}
+    def test_missing_deployment_source(self, tmp_path):
+        """Returns None when deployment-source/ doesn't exist."""
+        result = resolve_deployment_root(SCAN_ID, ".", tmp_path)
+        assert result is None
 
-terraform {
-  backend "s3" {}
-}
-'''
-
-
-class TestDeploymentContract:
-    def test_valid_contract_passes(self, tmp_path):
-        """A complete deployment contract should pass all checks."""
-        tf_root = _create_tf_root(tmp_path, {
-            "variables.tf": VALID_VARIABLES_TF,
-            "main.tf": VALID_PROVIDER_TF,
-        })
-        result = validate_contract(tf_root)
-        assert result["status"] == "PASS"
-        assert len(result["failures"]) == 0
-        assert all(result["checks"].values())
-
-    def test_missing_scan_id_variable_fails(self, tmp_path):
-        """Missing variable "scan_id" should fail."""
-        variables = '''
-variable "aws_region" {
-  type = string
-}
-'''
-        tf_root = _create_tf_root(tmp_path, {
-            "variables.tf": variables,
-            "main.tf": VALID_PROVIDER_TF,
-        })
-        result = validate_contract(tf_root)
-        assert result["status"] == "FAIL"
-        assert not result["checks"]["variable_scan_id"]
-        assert any("scan_id" in f for f in result["failures"])
-
-    def test_missing_aws_region_variable_fails(self, tmp_path):
-        """Missing variable "aws_region" should fail."""
-        variables = '''
-variable "scan_id" {
-  type = string
-}
-'''
-        tf_root = _create_tf_root(tmp_path, {
-            "variables.tf": variables,
-            "main.tf": VALID_PROVIDER_TF,
-        })
-        result = validate_contract(tf_root)
-        assert result["status"] == "FAIL"
-        assert not result["checks"]["variable_aws_region"]
-
-    def test_missing_default_tags_fails(self, tmp_path):
-        """Missing provider default_tags block should fail."""
-        provider_no_tags = '''
-provider "aws" {
-  region = var.aws_region
-}
-'''
-        tf_root = _create_tf_root(tmp_path, {
-            "variables.tf": VALID_VARIABLES_TF,
-            "main.tf": provider_no_tags,
-        })
-        result = validate_contract(tf_root)
-        assert result["status"] == "FAIL"
-        assert not result["checks"]["default_tags_block"]
-        assert not result["checks"]["default_tags_scan_id"]
-        assert not result["checks"]["default_tags_managed_by"]
-
-    def test_missing_managed_by_tag_fails(self, tmp_path):
-        """default_tags without managed-by should fail."""
-        provider_no_managed_by = '''
-provider "aws" {
-  region = var.aws_region
-
-  default_tags {
-    tags = {
-      scan-id = var.scan_id
-    }
-  }
-}
-'''
-        tf_root = _create_tf_root(tmp_path, {
-            "variables.tf": VALID_VARIABLES_TF,
-            "main.tf": provider_no_managed_by,
-        })
-        result = validate_contract(tf_root)
-        assert result["status"] == "FAIL"
-        assert result["checks"]["default_tags_scan_id"] is True
-        assert result["checks"]["default_tags_managed_by"] is False
-
-    def test_malformed_empty_tf_files_fail(self, tmp_path):
-        """Empty .tf files should fail all checks."""
-        tf_root = _create_tf_root(tmp_path, {
-            "main.tf": "",
-        })
-        result = validate_contract(tf_root)
-        assert result["status"] == "FAIL"
-        assert len(result["failures"]) == 5  # all checks fail
-
-    def test_no_tf_files_fail(self, tmp_path):
-        """A directory without .tf files should fail all checks."""
-        tf_root = _create_tf_root(tmp_path, {
-            "readme.md": "# Not terraform",
-        })
-        result = validate_contract(tf_root)
-        assert result["status"] == "FAIL"
-
-    def test_read_all_tf_content_reads_only_tf_files(self, tmp_path):
-        """read_all_tf_content should only read .tf files, not other extensions."""
-        tf_root = _create_tf_root(tmp_path, {
-            "main.tf": 'variable "scan_id" {}\n',
-            "notes.md": "This is not terraform",
-            "data.json": '{"key": "value"}',
-        })
-        content = read_all_tf_content(tf_root)
-        assert 'variable "scan_id"' in content
-        assert "This is not terraform" not in content
-        assert '"key"' not in content
+    def test_missing_nested_path(self, tmp_path):
+        """Returns None when nested subdir doesn't exist."""
+        (tmp_path / "deployment-source").mkdir()
+        result = resolve_deployment_root(SCAN_ID, "missing/subdir", tmp_path)
+        assert result is None
 
 
-class TestMultipleRoots:
-    """These test the logic about root count, not the contract regex itself."""
+# ---------------------------------------------------------------------------
+# find_tf_files
+# ---------------------------------------------------------------------------
 
-    def test_discovery_data_with_multiple_roots(self):
-        """Verify that discovery data with multiple roots is detectable."""
-        # This tests the pattern used by the main() function
+class TestFindTfFiles:
+    def test_finds_tf_files(self, tmp_path):
+        (tmp_path / "main.tf").write_text('resource "aws_s3_bucket" "b" {}')
+        (tmp_path / "variables.tf").write_text('variable "env" {}')
+        result = find_tf_files(tmp_path)
+        assert len(result) == 2
+
+    def test_ignores_non_tf_files(self, tmp_path):
+        (tmp_path / "main.tf").write_text("# tf")
+        (tmp_path / "README.md").write_text("# docs")
+        (tmp_path / "plan.json").write_text("{}")
+        result = find_tf_files(tmp_path)
+        assert len(result) == 1
+
+    def test_empty_directory(self, tmp_path):
+        result = find_tf_files(tmp_path)
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# detect_aws_provider
+# ---------------------------------------------------------------------------
+
+class TestDetectAwsProvider:
+    def test_detects_provider_block(self, tmp_path):
+        (tmp_path / "main.tf").write_text('provider "aws" { region = "eu-west-1" }')
+        assert detect_aws_provider(tmp_path) is True
+
+    def test_detects_hashicorp_aws_in_required_providers(self, tmp_path):
+        (tmp_path / "provider.tf").write_text(
+            'terraform {\n  required_providers {\n    aws = { source = "hashicorp/aws" }\n  }\n}'
+        )
+        assert detect_aws_provider(tmp_path) is True
+
+    def test_no_aws_provider(self, tmp_path):
+        (tmp_path / "main.tf").write_text('provider "google" { project = "my-project" }')
+        assert detect_aws_provider(tmp_path) is False
+
+    def test_empty_directory(self, tmp_path):
+        assert detect_aws_provider(tmp_path) is False
+
+
+# ---------------------------------------------------------------------------
+# Contract: source repo without scan_id variable still passes
+# ---------------------------------------------------------------------------
+
+class TestContractNoLongerRequiresVariables:
+    def test_no_scan_id_variable_passes(self, tmp_path):
+        """Target repo without variable "scan_id" must still satisfy the contract."""
+        (tmp_path / "main.tf").write_text(
+            'provider "aws" { region = "eu-north-1" }\n'
+            'resource "aws_s3_bucket" "b" { bucket = "test" }\n'
+        )
+        tf_files = find_tf_files(tmp_path)
+        assert len(tf_files) == 1
+
+    def test_no_default_tags_passes(self, tmp_path):
+        """Target repo without default_tags must still satisfy the contract."""
+        (tmp_path / "provider.tf").write_text(
+            'provider "aws" { region = "eu-north-1" }'
+        )
+        (tmp_path / "main.tf").write_text(
+            'resource "aws_instance" "web" { ami = "ami-123" instance_type = "t3.micro" }'
+        )
+        tf_files = find_tf_files(tmp_path)
+        assert len(tf_files) == 2
+        aws = detect_aws_provider(tmp_path)
+        assert aws is True
+
+
+# ---------------------------------------------------------------------------
+# Discovery data checks
+# ---------------------------------------------------------------------------
+
+class TestDiscoveryDataChecks:
+    def test_no_terraform_roots(self):
+        discovery = {"terraform_directories": []}
+        assert len(discovery["terraform_directories"]) == 0
+
+    def test_multiple_terraform_roots(self):
         discovery = {
             "terraform_directories": [
                 {"path": "/a", "relative_path": "a"},
                 {"path": "/b", "relative_path": "b"},
-                {"path": "/c", "relative_path": "c"},
             ]
         }
         assert len(discovery["terraform_directories"]) > 1
 
-    def test_discovery_data_with_zero_roots(self):
-        """Verify that empty discovery data is detectable."""
-        discovery = {"terraform_directories": []}
-        assert len(discovery["terraform_directories"]) == 0
+    def test_single_root(self):
+        discovery = {
+            "terraform_directories": [{"path": "/tf", "relative_path": "."}]
+        }
+        assert len(discovery["terraform_directories"]) == 1

@@ -2,27 +2,31 @@
 """
 scripts/deployment/validate_deployment_contract.py
 
-Validates that a Terraform deployment source satisfies the framework's
-controlled deployment contract before Terraform plan is executed.
+Validates that the downloaded Terraform deployment source satisfies the
+framework's controlled deployment contract.
 
-Requirements:
-    1. Exactly one Terraform root directory.
-    2. variable "scan_id"   declaration present.
-    3. variable "aws_region" declaration present.
-    4. AWS provider default_tags containing scan-id and managed-by references.
+The contract no longer requires the target repository to declare framework
+variables or tags.  Tags are injected automatically by the pipeline through
+AWS Provider environment variables (TF_AWS_DEFAULT_TAGS_*).
 
-If the contract is not met, the script fails with a clear message.
-Scanning arbitrary Terraform repositories remains supported — only controlled
-AWS deployment requires this contract.
+Contract checks:
+    1. Terraform discovery metadata exists.
+    2. Exactly one Terraform root.
+    3. The deployment root is resolvable from the downloaded artifact.
+    4. At least one .tf file exists in the deployment root.
+    5. The configuration uses the HashiCorp AWS provider (best-effort check).
+    6. No source files are modified during validation.
+
+The target Terraform source is never modified.
 
 Usage:
     python scripts/deployment/validate_deployment_contract.py <SCAN_ID>
 
-Environment variables:
-    SCAN_ID  — also accepted from env if not provided as CLI argument.
+Output:
+    reports/deployment/<SCAN_ID>/deployment-contract-validation.json
+    $GITHUB_OUTPUT  (deployment_root, deployment_root_relative)
 """
 
-import argparse
 import os
 import re
 import sys
@@ -32,249 +36,237 @@ ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT_DIR))
 from scripts.utils.evidence import safe_read_json, safe_write_json, utc_now_iso
 
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+MINIMUM_AWS_PROVIDER_VERSION = "5.62.0"
+TAG_INJECTION_MODE = "aws_provider_environment_variables"
+
+# Detect AWS provider declaration (best-effort, no HCL parser required)
+RE_AWS_PROVIDER = re.compile(
+    r'provider\s+"aws"\s*\{|required_providers\s*\{[^}]*hashicorp/aws',
+    re.MULTILINE | re.DOTALL,
+)
+
+# Runtime-generated directories and files to exclude from integrity checks
+TERRAFORM_RUNTIME_DIRS = {".terraform"}
+TERRAFORM_RUNTIME_FILES = {
+    ".terraform.lock.hcl",
+    "tfplan",
+    "terraform.tfstate",
+    "terraform.tfstate.backup",
+    "crash.log",
+}
+
 
 # ---------------------------------------------------------------------------
-# Contract patterns (regex on .tf file content)
+# Path resolution
 # ---------------------------------------------------------------------------
 
-# Match:  variable "scan_id" {
-RE_VAR_SCAN_ID = re.compile(
-    r'^\s*variable\s+"scan_id"\s*\{', re.MULTILINE
-)
+def resolve_deployment_root(
+    scan_id: str,
+    tf_root_relative: str,
+    cwd: Path,
+) -> Path | None:
+    """
+    Resolve the Terraform root in the terraform-plan job context.
 
-# Match:  variable "aws_region" {
-RE_VAR_AWS_REGION = re.compile(
-    r'^\s*variable\s+"aws_region"\s*\{', re.MULTILINE
-)
+    The deployment-source artifact is downloaded to deployment-source/.
+    The artifact upload uploads the CONTENTS of repositories/cloned/<SCAN_ID>/
+    so files land directly at deployment-source/ — the SCAN_ID prefix is
+    stripped by the GitHub Actions artifact mechanism.
 
-# Match:  scan-id  (inside a default_tags block — loose match for presence)
-RE_TAG_SCAN_ID = re.compile(
-    r'scan-id\s*=', re.MULTILINE
-)
+    relative_path="."  → deployment-source/
+    relative_path="a"  → deployment-source/a/
+    """
+    if tf_root_relative in (".", ""):
+        candidate = cwd / "deployment-source"
+    else:
+        candidate = cwd / "deployment-source" / tf_root_relative
 
-# Match:  managed-by  (inside a default_tags block)
-RE_TAG_MANAGED_BY = re.compile(
-    r'managed-by\s*=', re.MULTILINE
-)
-
-# Match: default_tags {  (to confirm we're inside a provider aws block)
-RE_DEFAULT_TAGS = re.compile(
-    r'default_tags\s*\{', re.MULTILINE
-)
+    if candidate.is_dir():
+        return candidate
+    return None
 
 
-def read_all_tf_content(tf_root: str) -> str:
-    """Concatenate all .tf file contents from a directory (non-recursive)."""
-    content_parts: list[str] = []
-    root = Path(tf_root)
-    for tf_file in sorted(root.glob("*.tf")):
+# ---------------------------------------------------------------------------
+# Source checks
+# ---------------------------------------------------------------------------
+
+def find_tf_files(tf_root: Path) -> list[Path]:
+    """Return all .tf files directly in tf_root (non-recursive)."""
+    return sorted(tf_root.glob("*.tf"))
+
+
+def detect_aws_provider(tf_root: Path) -> bool:
+    """
+    Return True if any .tf file in tf_root appears to use the AWS provider.
+
+    This is a best-effort check on file content — it does not parse HCL.
+    Returns False only when no indicator of the AWS provider is found.
+    """
+    # Check provider.tf first, then all .tf files
+    for tf_file in sorted(tf_root.glob("*.tf")):
         try:
-            content_parts.append(tf_file.read_text(encoding="utf-8"))
+            content = tf_file.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-    return "\n".join(content_parts)
+        if RE_AWS_PROVIDER.search(content) or "hashicorp/aws" in content:
+            return True
+    return False
 
 
-def validate_contract(tf_root: str) -> dict:
-    """Check deployment contract requirements against .tf files in *tf_root*.
-
-    Returns a dict with check results and failure details.
-    """
-    all_content = read_all_tf_content(tf_root)
-
-    checks = {
-        "variable_scan_id": bool(RE_VAR_SCAN_ID.search(all_content)),
-        "variable_aws_region": bool(RE_VAR_AWS_REGION.search(all_content)),
-        "default_tags_block": bool(RE_DEFAULT_TAGS.search(all_content)),
-        "default_tags_scan_id": bool(
-            RE_DEFAULT_TAGS.search(all_content) and RE_TAG_SCAN_ID.search(all_content)
-        ),
-        "default_tags_managed_by": bool(
-            RE_DEFAULT_TAGS.search(all_content) and RE_TAG_MANAGED_BY.search(all_content)
-        ),
-    }
-
-    failures: list[str] = []
-    if not checks["variable_scan_id"]:
-        failures.append('Missing: variable "scan_id" { ... }')
-    if not checks["variable_aws_region"]:
-        failures.append('Missing: variable "aws_region" { ... }')
-    if not checks["default_tags_block"]:
-        failures.append("Missing: provider aws { default_tags { ... } }")
-    if not checks["default_tags_scan_id"]:
-        failures.append('Missing: default_tags must include scan-id = var.scan_id')
-    if not checks["default_tags_managed_by"]:
-        failures.append('Missing: default_tags must include managed-by = "iac-security-framework"')
-
-    status = "PASS" if not failures else "FAIL"
-    return {"checks": checks, "failures": failures, "status": status}
-
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Validate Terraform deployment contract for the IaC Security Framework."
-    )
-    parser.add_argument("scan_id", help="Unique SCAN_ID")
-    args = parser.parse_args()
-    scan_id: str = args.scan_id
+    if len(sys.argv) < 2:
+        print("Usage: validate_deployment_contract.py <SCAN_ID>", file=sys.stderr)
+        sys.exit(1)
 
-    # ------------------------------------------------------------------ #
-    # Locate Terraform roots using existing discovery data                #
-    # ------------------------------------------------------------------ #
-    metadata_dir = ROOT_DIR / "repositories" / "metadata" / scan_id
-    discovery_path = metadata_dir / "terraform-directories.json"
-
-    # Also check deployment-source location (terraform-plan job context)
-    deployment_source_discovery = Path("deployment-source") / "repositories" / "metadata" / scan_id / "terraform-directories.json"
-
-    discovery = safe_read_json(str(discovery_path))
-    if not isinstance(discovery, dict):
-        # Try deployment-source context
-        discovery = safe_read_json(str(deployment_source_discovery))
-
+    scan_id: str = sys.argv[1]
+    cwd = Path.cwd()
     deploy_dir = ROOT_DIR / "reports" / "deployment" / scan_id
     deploy_dir.mkdir(parents=True, exist_ok=True)
 
-    if not isinstance(discovery, dict):
-        error_result = {
+    def _fail(error_code: str, message: str, extra: dict | None = None) -> None:
+        result = {
+            "schema_version": "1.0",
             "scan_id": scan_id,
-            "generated_at": utc_now_iso(),
+            "generated_at_utc": utc_now_iso(),
             "status": "FAIL",
-            "error": "NO_DISCOVERY_DATA",
-            "message": (
-                "terraform-directories.json not found. "
-                "Ensure Terraform directory discovery (Stage 3) completed."
-            ),
+            "error": error_code,
+            "message": message,
+            **(extra or {}),
         }
-        safe_write_json(str(deploy_dir / "deployment-contract-validation.json"), error_result)
-        print(f"[deployment_contract] ERROR: Discovery data not found for {scan_id}", file=sys.stderr)
+        safe_write_json(str(deploy_dir / "deployment-contract-validation.json"), result)
+        print(f"\n{'='*60}", file=sys.stderr)
+        print(f"  DEPLOYMENT_CONTRACT_FAILED", file=sys.stderr)
+        print(f"{'='*60}", file=sys.stderr)
+        print(f"  SCAN_ID : {scan_id}", file=sys.stderr)
+        print(f"  Error   : {error_code}", file=sys.stderr)
+        print(f"  {message}", file=sys.stderr)
+        print(f"{'='*60}\n", file=sys.stderr)
         sys.exit(1)
+
+    # ------------------------------------------------------------------ #
+    # 1. Load discovery metadata                                           #
+    # ------------------------------------------------------------------ #
+    # Try framework-repo layout first (security-pipeline job context)
+    discovery_path = ROOT_DIR / "repositories" / "metadata" / scan_id / "terraform-directories.json"
+    # Then terraform-plan job layout (metadata downloaded as artifact)
+    discovery_path_alt = cwd / "repositories" / "metadata" / scan_id / "terraform-directories.json"
+
+    discovery = safe_read_json(str(discovery_path))
+    if not isinstance(discovery, dict):
+        discovery = safe_read_json(str(discovery_path_alt))
+
+    if not isinstance(discovery, dict):
+        _fail(
+            "NO_DISCOVERY_DATA",
+            "terraform-directories.json not found. "
+            "Ensure Terraform directory discovery (Stage 3) completed "
+            "and scan-metadata artifact was downloaded.",
+        )
 
     tf_dirs = discovery.get("terraform_directories", [])
 
     # ------------------------------------------------------------------ #
-    # Check: exactly one Terraform root                                   #
+    # 2. Single Terraform root check                                       #
     # ------------------------------------------------------------------ #
     if len(tf_dirs) == 0:
-        result = {
-            "scan_id": scan_id,
-            "generated_at": utc_now_iso(),
-            "status": "FAIL",
-            "error": "NO_TERRAFORM_ROOTS",
-            "message": "No Terraform root directories were discovered.",
-            "discovered_roots": 0,
-            "deployment_root": None,
-        }
-        safe_write_json(str(deploy_dir / "deployment-contract-validation.json"), result)
-        print(f"\n{'='*60}")
-        print(f"  DEPLOYMENT_CONTRACT_FAILED")
-        print(f"{'='*60}")
-        print(f"  SCAN_ID: {scan_id}")
-        print(f"  Error: NO_TERRAFORM_ROOTS")
-        print(f"  No Terraform root directories were discovered.")
-        print(f"{'='*60}\n")
-        sys.exit(1)
+        _fail("NO_TERRAFORM_ROOTS", "No Terraform root directories were discovered.")
 
     if len(tf_dirs) > 1:
-        root_paths = [d.get("relative_path", d.get("path", "?")) for d in tf_dirs]
-        result = {
-            "scan_id": scan_id,
-            "generated_at": utc_now_iso(),
-            "status": "FAIL",
-            "error": "MULTIPLE_TERRAFORM_ROOTS",
-            "message": (
-                f"{len(tf_dirs)} Terraform roots were discovered. "
-                "Automatic AWS deployment is disabled because a unique "
-                "deployment target could not be determined."
-            ),
-            "discovered_roots": len(tf_dirs),
-            "roots": root_paths,
-            "deployment_root": None,
-        }
-        safe_write_json(str(deploy_dir / "deployment-contract-validation.json"), result)
-        print(f"\n{'='*60}")
-        print(f"  DEPLOYMENT_CONTRACT_FAILED")
-        print(f"{'='*60}")
-        print(f"  SCAN_ID: {scan_id}")
-        print(f"  Error: MULTIPLE_TERRAFORM_ROOTS")
-        print(f"  {len(tf_dirs)} Terraform roots were discovered.")
-        print(f"")
-        for rp in root_paths:
-            print(f"    - {rp}")
-        print(f"")
-        print(f"  Automatic AWS deployment is disabled because a unique")
-        print(f"  deployment target could not be determined.")
-        print(f"{'='*60}\n")
-        sys.exit(1)
+        roots = [d.get("relative_path", d.get("path", "?")) for d in tf_dirs]
+        _fail(
+            "MULTIPLE_TERRAFORM_ROOTS",
+            f"{len(tf_dirs)} Terraform roots discovered. "
+            "Automatic deployment is disabled when a unique target "
+            "cannot be determined.",
+            {"discovered_roots": len(tf_dirs), "roots": roots},
+        )
 
-    # ------------------------------------------------------------------ #
-    # Single root — validate contract                                     #
-    # ------------------------------------------------------------------ #
     tf_root_entry = tf_dirs[0]
-    tf_root_path = tf_root_entry.get("path", "")
-    tf_root_relative = tf_root_entry.get("relative_path", ".")
+    tf_root_relative: str = tf_root_entry.get("relative_path", ".")
 
-    if not os.path.isdir(tf_root_path):
-        # In the terraform-plan job, the deployment source artifact was downloaded
-        # to deployment-source/.  The artifact upload was:
-        #   path: repositories/cloned/<SCAN_ID>/
-        # so the repo contents land directly at deployment-source/ (the SCAN_ID
-        # prefix is stripped by the artifact mechanism).
-        #
-        # relative_path from discovery is relative to the clone root, e.g. "." or
-        # "modules/vpc".  So the actual path on the plan runner is:
-        #   deployment-source/<relative_path>
-        cwd = Path.cwd()
+    # ------------------------------------------------------------------ #
+    # 3. Resolve deployment root (cross-job artifact layout)              #
+    # ------------------------------------------------------------------ #
+    tf_root_path = resolve_deployment_root(scan_id, tf_root_relative, cwd)
 
-        # Normalise relative_path — "." means the clone root itself
-        if tf_root_relative in (".", ""):
-            candidate = cwd / "deployment-source"
+    if tf_root_path is None:
+        # Diagnostics
+        ds = cwd / "deployment-source"
+        if ds.is_dir():
+            children = [p.name for p in sorted(ds.iterdir())]
         else:
-            candidate = cwd / "deployment-source" / tf_root_relative
+            children = []
+        _fail(
+            "TERRAFORM_ROOT_NOT_FOUND",
+            f"Could not resolve deployment root. "
+            f"relative_path='{tf_root_relative}', "
+            f"deployment-source/ children={children}",
+            {"deployment_root_relative": tf_root_relative},
+        )
 
-        if candidate.is_dir():
-            tf_root_path = str(candidate)
-        else:
-            # Emit helpful diagnostics before failing
-            print(f"[deployment_contract] CWD = {cwd}", file=sys.stderr)
-            print(f"[deployment_contract] Expected original path : {tf_root_path}", file=sys.stderr)
-            print(f"[deployment_contract] Tried fallback path    : {candidate}", file=sys.stderr)
-            # List deployment-source/ contents to aid debugging
-            ds = cwd / "deployment-source"
-            if ds.is_dir():
-                children = [p.name for p in sorted(ds.iterdir())]
-                print(f"[deployment_contract] deployment-source/ contents: {children}", file=sys.stderr)
-            else:
-                print(f"[deployment_contract] deployment-source/ does not exist", file=sys.stderr)
+    # ------------------------------------------------------------------ #
+    # 4. At least one .tf file                                            #
+    # ------------------------------------------------------------------ #
+    tf_files = find_tf_files(tf_root_path)
+    if not tf_files:
+        _fail(
+            "NO_TF_FILES",
+            f"No .tf files found in deployment root: {tf_root_path}",
+            {"deployment_root_runtime": str(tf_root_path)},
+        )
 
-            error_result = {
-                "scan_id": scan_id,
-                "generated_at": utc_now_iso(),
-                "status": "FAIL",
-                "error": "TERRAFORM_ROOT_NOT_FOUND",
-                "message": (
-                    f"Terraform root not found. "
-                    f"Original path: {tf_root_entry.get('path', '')} | "
-                    f"Fallback tried: {candidate}"
-                ),
-            }
-            safe_write_json(str(deploy_dir / "deployment-contract-validation.json"), error_result)
-            print(f"[deployment_contract] ERROR: TF root not found: {tf_root_path}", file=sys.stderr)
-            sys.exit(1)
+    # ------------------------------------------------------------------ #
+    # 5. AWS provider presence (best-effort)                              #
+    # ------------------------------------------------------------------ #
+    aws_provider_present = detect_aws_provider(tf_root_path)
 
-    contract = validate_contract(tf_root_path)
-    warnings: list[str] = []
+    # ------------------------------------------------------------------ #
+    # 6. Source not modified (no .tf changes during validation)           #
+    # This validator reads files only — guaranteed by design.             #
+    # ------------------------------------------------------------------ #
 
+    # ------------------------------------------------------------------ #
+    # Build and write result                                              #
+    # ------------------------------------------------------------------ #
     result = {
+        "schema_version": "1.0",
         "scan_id": scan_id,
-        "generated_at": utc_now_iso(),
-        "status": contract["status"],
-        "deployment_root": tf_root_path,
+        "generated_at_utc": utc_now_iso(),
+        "status": "PASS",
         "deployment_root_relative": tf_root_relative,
+        "deployment_root_runtime": str(tf_root_path),
         "discovered_roots": 1,
-        "checks": contract["checks"],
-        "failures": contract["failures"],
-        "warnings": warnings,
+        "tf_files_found": len(tf_files),
+        "source_modification": False,
+        "tag_injection": {
+            "mode": TAG_INJECTION_MODE,
+            "required_provider": "registry.terraform.io/hashicorp/aws",
+            "minimum_provider_version": MINIMUM_AWS_PROVIDER_VERSION,
+            "required_tags": {
+                "scan-id": scan_id,
+                "managed-by": "iac-security-framework",
+            },
+        },
+        "checks": {
+            "discovery_data_present": True,
+            "single_terraform_root": True,
+            "deployment_root_resolvable": True,
+            "tf_files_present": True,
+            "aws_provider_detected": aws_provider_present,
+            "source_not_modified": True,
+        },
+        "warnings": [] if aws_provider_present else [
+            "AWS provider not detected in .tf files. "
+            "Tag injection requires AWS provider >= 5.62.0."
+        ],
     }
 
     safe_write_json(str(deploy_dir / "deployment-contract-validation.json"), result)
@@ -283,36 +275,24 @@ def main() -> None:
     # Console output                                                      #
     # ------------------------------------------------------------------ #
     print(f"\n{'='*60}")
-    if contract["status"] == "PASS":
-        print(f"  DEPLOYMENT CONTRACT — PASS")
-    else:
-        print(f"  DEPLOYMENT_CONTRACT_FAILED")
+    print(f"  DEPLOYMENT CONTRACT — PASS")
     print(f"{'='*60}")
-    print(f"  SCAN_ID          : {scan_id}")
-    print(f"  Deployment Root  : {tf_root_relative}")
-    print(f"  Status           : {contract['status']}")
-    print()
-    for name, passed in contract["checks"].items():
-        mark = "✓" if passed else "✗"
-        print(f"    {mark} {name}")
-    print()
-
-    if contract["failures"]:
-        print(f"  Required framework tagging configuration was not detected.")
-        print(f"")
-        print(f"  Required tags:")
-        print(f"    scan-id=<SCAN_ID>")
-        print(f'    managed-by=iac-security-framework')
-        print(f"")
-        print(f"  Terraform source remains valid for security scanning")
-        print(f"  but is not eligible for controlled AWS deployment.")
-        print(f"{'='*60}\n")
-        sys.exit(1)
-
-    print(f"  Terraform source is eligible for controlled AWS deployment.")
+    print(f"  SCAN_ID              : {scan_id}")
+    print(f"  Deployment Root (rel): {tf_root_relative}")
+    print(f"  Deployment Root (abs): {tf_root_path}")
+    print(f"  .tf Files Found      : {len(tf_files)}")
+    print(f"  AWS Provider Detected: {aws_provider_present}")
+    print(f"  Source Modified      : False")
+    print(f"  Tag Injection Mode   : {TAG_INJECTION_MODE}")
+    print(f"  Tags to Inject       : scan-id={scan_id}, managed-by=iac-security-framework")
+    print(f"  Min Provider Version : >= {MINIMUM_AWS_PROVIDER_VERSION}")
+    if not aws_provider_present:
+        print(f"  WARNING: AWS provider not detected — tag injection may fail")
     print(f"{'='*60}\n")
 
-    # Write deployment root to GITHUB_OUTPUT if available
+    # ------------------------------------------------------------------ #
+    # Write to GITHUB_OUTPUT                                              #
+    # ------------------------------------------------------------------ #
     github_output = os.environ.get("GITHUB_OUTPUT")
     if github_output:
         with open(github_output, "a") as fh:

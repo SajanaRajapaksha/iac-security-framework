@@ -1,173 +1,265 @@
 # Controlled AWS Deployment Preparation
 
-This document describes the controlled, forensic-ready Terraform deployment
-preparation implemented in the IaC Security Framework.
-
 ## Overview
 
-After the security scanning, policy validation, finding enrichment and
-pre-deployment risk scoring stages complete, the framework can prepare a
-controlled Terraform deployment to AWS.  The preparation stage generates a
-saved Terraform plan with full forensic evidence — **it intentionally does
-not execute `terraform apply`**.
+The IaC Security Framework performs a **forensic-ready Terraform plan** for each scan without executing `terraform apply`. Tags are injected automatically — target Terraform repositories require **no manual modification**.
+
+---
+
+## Automatic Scan Tag Injection
 
 ```text
-Security Analysis
-      ↓
-Risk Score
-      ↓
-Exact Source Preservation  (Stage 19)
-      ↓
-OIDC Authentication        (Stage 20)
-      ↓
-Scan-Isolated State Init   (Stage 21)
-      ↓
-Terraform Plan             (Stage 22)
-      ↓
-SCAN_ID Tag Verification   (Stage 23)
-      ↓
-Forensic Plan Evidence     (Stage 24)
+Target Terraform repository
+        |
+        | remains unchanged
+        v
+GitHub Actions receives SCAN_ID
+        |
+        v
+AWS Provider default tags injected through environment variables
+        |
+        v
+Terraform saved plan (-out=tfplan)
+        |
+        v
+Plan JSON tag verification (tags_all validated)
+        |
+        v
+Source integrity verified (no .tf files changed)
+        |
+        v
+Future deployment (NOT IMPLEMENTED — terraform apply not present)
+        |
+        v
+AWS resource tracking by scan-id tag
 ```
 
-> **Terraform Apply is intentionally not implemented in this stage.**
+### Injected Tags
 
-## Single SCAN_ID Lifecycle
+Every taggable AWS resource in the Terraform plan receives:
 
-The framework uses exactly one `SCAN_ID` (e.g. `SCAN-a8f713c2`) to trace
-every artefact from source acquisition through to deployment preparation:
+| Tag | Value |
+|-----|-------|
+| `scan-id` | Current SCAN_ID (e.g. `SCAN-f1fd2835`) |
+| `managed-by` | `iac-security-framework` |
+
+### Injection Mechanism
+
+Tags are passed to the AWS Provider using environment variables:
+
+```bash
+env \
+  "TF_AWS_DEFAULT_TAGS_scan-id=${SCAN_ID}" \
+  "TF_AWS_DEFAULT_TAGS_managed-by=iac-security-framework" \
+  terraform plan \
+    -input=false \
+    -out=tfplan
+```
+
+The `env` command (not `export`) is required because hyphenated names (`scan-id`) are not valid shell variable identifiers.
+
+### Required AWS Provider Version
+
+```
+>= 5.62.0
+```
+
+The `TF_AWS_DEFAULT_TAGS_*` environment variable mechanism requires AWS Provider **5.62.0 or later**. The framework validates this automatically after `terraform init` by reading `.terraform.lock.hcl`.
+
+### Source Repository Unchanged
+
+**The framework does not modify target Terraform source files to add tracking tags.**
+
+- No `variable "scan_id"` declaration is required.
+- No `provider "aws" { default_tags {...} }` block is required.
+- No `_override.tf` files are created.
+- No generated provider blocks are injected.
+- Source integrity is SHA256-verified before and after planning.
+
+---
+
+## Deployment Contract (Revised)
+
+The deployment contract now checks only:
+
+| Check | Requirement |
+|-------|-------------|
+| Discovery data | `terraform-directories.json` must exist |
+| Single root | Exactly one Terraform root discovered |
+| Resolvable path | Root resolvable from `deployment-source/<relative_path>` |
+| .tf files present | At least one `.tf` file in the root |
+| AWS provider detected | Best-effort check for `provider "aws"` or `hashicorp/aws` |
+| Source not modified | Validation reads files only |
+
+**Not required:**
+- `variable "scan_id"`
+- `variable "aws_region"`
+- `provider "aws" { default_tags {...} }`
+- Any framework-specific Terraform configuration
+
+---
+
+## Pipeline Flow (Stages 19–24)
 
 ```text
-source acquisition  →  static scanning  →  policy validation  →
-risk scoring  →  Terraform planning  →  future deployment  →  future runtime validation
+security-pipeline job
+    Stage 19: Upload deployment-source artifact
+              Upload scan-metadata artifact
+    ↓
+terraform-plan job (push to dev only, never PRs)
+    Stage 19: Download deployment-source artifact
+              Download scan-metadata artifact
+    Stage 20: AWS OIDC Authentication
+    Stage 21a: Validate deployment contract
+    Stage 21b: Save source integrity baseline (.tf SHA256s)
+    Stage 21c: terraform init -backend-config (S3, scan-isolated)
+    Stage 21d: Validate AWS provider version (>= 5.62.0)
+    Stage 22:  terraform plan with TF_AWS_DEFAULT_TAGS_* injection
+               Generate human-readable plan (terraform show -no-color)
+               Generate JSON plan (terraform show -json)
+               Copy plan evidence to reports/
+    Stage 22e: Verify source integrity after plan (no .tf changes)
+    Stage 23:  Validate tags in plan JSON (strict — scan-id, managed-by)
+    Stage 24a: Capture Terraform + provider versions
+    Stage 24b: Generate deployment plan evidence JSON
+    Stage 24c: Hash all evidence files (SHA256 manifest)
+    ↑
+    Upload: terraform-plan-<SCAN_ID> artifact (if: always())
 ```
 
-The SCAN_ID is generated once in the `security-pipeline` job and passed to
-the `terraform-plan` job via GitHub Actions job outputs.
+**`terraform apply` is NOT implemented in this stage.**
 
-## Source Preservation
+---
 
-The Terraform code that enters the plan stage is the **exact repository
-snapshot** that passed through all prior validation, scanning, policy and
-enrichment stages.  It is uploaded as a GitHub Actions artifact at the end
-of the security pipeline and downloaded in the plan job — no repository
-re-cloning occurs.
-
-## AWS Authentication
-
-The framework authenticates to AWS exclusively via **GitHub OIDC federation**.
-No static AWS access keys are used.  AWS credentials only exist in the
-`terraform-plan` job — the security scanning job never receives AWS
-permissions.  Pull-request workflows never obtain AWS credentials.
-
-## Scan-Isolated Terraform State
-
-Every scan gets its own Terraform state file:
+## Evidence Structure
 
 ```text
-s3://<TF_STATE_BUCKET>/research/<SCAN_ID>/terraform.tfstate
+reports/deployment/<SCAN_ID>/
+├── deployment-contract-validation.json     # Contract check results
+├── aws-provider-validation.json            # Provider version check
+├── deployment-source-baseline.json         # SHA256 baseline (before plan)
+├── deployment-source-integrity.json        # Integrity verification (after plan)
+├── terraform-plan.txt                      # Human-readable plan
+├── terraform-plan.json                     # Machine-readable plan
+├── terraform-plan.sha256                   # Binary plan hash
+├── tag-validation.json                     # Tag propagation results
+├── deployment-plan-evidence.json           # Full forensic evidence
+└── deployment-evidence-manifest.json       # SHA256 of all evidence
 ```
 
-S3 native state locking is enabled via `use_lockfile=true`.
+### deployment-contract-validation.json
 
-## Deployment Contract
-
-Terraform repositories eligible for **controlled AWS deployment** must
-satisfy a deployment contract.  Repositories that do not satisfy the contract
-remain valid for security scanning but are not eligible for deployment.
-
-### Required Elements
-
-```hcl
-variable "scan_id" {
-  description = "IaC Security Framework scan identifier"
-  type        = string
-}
-
-variable "aws_region" {
-  description = "AWS deployment region"
-  type        = string
-}
-
-provider "aws" {
-  region = var.aws_region
-
-  default_tags {
-    tags = {
-      scan-id    = var.scan_id
-      managed-by = "iac-security-framework"
+```json
+{
+  "schema_version": "1.0",
+  "scan_id": "SCAN-f1fd2835",
+  "generated_at_utc": "...",
+  "status": "PASS",
+  "deployment_root_relative": ".",
+  "deployment_root_runtime": "/home/runner/.../deployment-source",
+  "tf_files_found": 4,
+  "source_modification": false,
+  "tag_injection": {
+    "mode": "aws_provider_environment_variables",
+    "required_provider": "registry.terraform.io/hashicorp/aws",
+    "minimum_provider_version": "5.62.0",
+    "required_tags": {
+      "scan-id": "SCAN-f1fd2835",
+      "managed-by": "iac-security-framework"
     }
   }
 }
+```
 
-terraform {
-  backend "s3" {}
+### aws-provider-validation.json
+
+```json
+{
+  "schema_version": "1.0",
+  "scan_id": "SCAN-f1fd2835",
+  "status": "PASS",
+  "provider": "registry.terraform.io/hashicorp/aws",
+  "selected_version": "6.53.0",
+  "minimum_version": "5.62.0",
+  "environment_default_tags_supported": true
 }
 ```
 
-The framework validates this contract before planning.  If the contract is
-missing, deployment preparation stops with:
+### tag-validation.json
 
-```text
-DEPLOYMENT_CONTRACT_FAILED
-
-Required framework tagging configuration was not detected.
-
-Required tags:
-  scan-id=<SCAN_ID>
-  managed-by=iac-security-framework
-
-Terraform source remains valid for security scanning
-but is not eligible for controlled AWS deployment.
+```json
+{
+  "schema_version": "1.0",
+  "scan_id": "SCAN-f1fd2835",
+  "status": "PASS",
+  "injection_mode": "aws_provider_environment_variables",
+  "required_tags": {
+    "scan-id": "SCAN-f1fd2835",
+    "managed-by": "iac-security-framework"
+  },
+  "taggable_resources_checked": 6,
+  "resources_passed": 6,
+  "resources_failed": 0,
+  "resources_unknown": 0,
+  "untaggable_or_not_applicable": [],
+  "skipped_actions": [],
+  "failures": []
+}
 ```
 
-## Tag Validation
-
-After `terraform plan`, the framework reads the plan JSON and verifies that
-every taggable AWS resource change carries:
-
-- `scan-id = <SCAN_ID>`
-- `managed-by = iac-security-framework`
-
-Resources that do not support AWS tagging are skipped.  Delete-only and
-no-op changes are also skipped.  Tags flowing from `default_tags` into
-`tags_all` are accepted.
-
-## Evidence Directory Structure
-
-```text
-reports/
-└── deployment/
-    └── <SCAN_ID>/
-        ├── deployment-contract-validation.json
-        ├── terraform-plan.txt
-        ├── terraform-plan.json
-        ├── terraform-plan.sha256
-        ├── tag-validation.json
-        ├── deployment-plan-evidence.json
-        └── deployment-evidence-manifest.json
-```
+---
 
 ## Security Requirements
 
-1. No static AWS access keys.
-2. AWS authentication only via GitHub OIDC.
-3. AWS credentials only exist in the deployment job.
-4. Pull-request workflows never receive AWS deployment credentials.
-5. `terraform apply` is not implemented.
-6. No secrets in evidence files.
-7. Existing scan evidence is never overwritten.
-8. Scanned Terraform source is never silently modified.
-9. Deployment uses the saved scanned-source artifact, not a fresh clone.
-10. Every deployment candidate is linked to the existing SCAN_ID.
-11. Terraform state is isolated by SCAN_ID.
-12. All taggable AWS resources must contain the SCAN_ID tag.
+| Requirement | Status |
+|-------------|--------|
+| No static AWS access keys | ✅ OIDC only |
+| No PR AWS credentials | ✅ Job condition: push to dev only |
+| No re-cloning | ✅ Uses deployment-source artifact |
+| No .tf file modification | ✅ Source integrity verified |
+| No _override.tf injection | ✅ Not implemented |
+| No terraform apply | ✅ Not implemented |
+| Scan-isolated state | ✅ `research/<SCAN_ID>/terraform.tfstate` |
+| S3 state locking | ✅ `use_lockfile=true` |
+| Tags validated in plan | ✅ Strict tag validation |
+| All evidence linked to SCAN_ID | ✅ Every file uses scan_id |
 
-## AWS IAM Permissions Required
+---
 
-The `GitHubTerraformDeployRole` needs (at minimum):
+## Future Apply Stage (Not Yet Implemented)
 
-- `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject` on the state bucket
-- `s3:ListBucket` on the state bucket
-- `sts:GetCallerIdentity`
-- Permissions for whatever AWS resources the target Terraform declares
-  (e.g. `ec2:*`, `s3:*`, etc. as appropriate for the research deployment)
+When `terraform apply` is added in a future iteration, it must use:
+
+```bash
+env \
+  "TF_AWS_DEFAULT_TAGS_scan-id=${SCAN_ID}" \
+  "TF_AWS_DEFAULT_TAGS_managed-by=iac-security-framework" \
+  terraform apply \
+    -input=false \
+    tfplan
+```
+
+The same saved plan binary (`tfplan`) must be used — not a new plan.
+
+---
+
+## Post-Deployment Resource Tracking (Future)
+
+After deployment, tagged resources can be enumerated:
+
+```bash
+aws resourcegroupstaggingapi get-resources \
+  --region "$AWS_REGION" \
+  --tag-filters "Key=scan-id,Values=${SCAN_ID}" \
+  --output json
+```
+
+**Important notes:**
+- Terraform state remains the authoritative list of all deployed resources.
+- The `scan-id` tag is the runtime correlation mechanism for taggable resources.
+- Some AWS resource types do not support resource tags (e.g. IAM inline policies, some networking primitives).
+- Not every taggable resource is returned through a single AWS tagging API call.
+- Auto Scaling-created EC2 instances may require explicit tag propagation configuration.
+- The plan validator reports genuinely non-taggable resources separately — they do not cause pipeline failures.
+
+**The current deployment status is: `NOT_APPLIED`**

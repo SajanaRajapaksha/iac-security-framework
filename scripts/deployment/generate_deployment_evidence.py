@@ -11,10 +11,14 @@ Usage:
         --plan-exit-code <N> \\
         --plan-sha256 <HASH> \\
         --tag-validation-status <PASS|FAIL> \\
+        --source-integrity-status <PASS|FAIL> \\
+        --aws-provider-version <VERSION> \\
         [--aws-identity-json <JSON_STRING>] \\
         [--terraform-version <VERSION>] \\
         [--state-bucket <BUCKET>] \\
-        [--state-key <KEY>]
+        [--state-key <KEY>] \\
+        [--taggable-checked <N>] \\
+        [--resources-failed <N>]
 
 Output:
     reports/deployment/<SCAN_ID>/deployment-plan-evidence.json
@@ -34,6 +38,9 @@ from scripts.utils.evidence import (
     utc_now_iso,
 )
 
+INJECTION_MODE = "aws_provider_environment_variables"
+MINIMUM_AWS_PROVIDER_VERSION = "5.62.0"
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -44,10 +51,14 @@ def main() -> None:
     parser.add_argument("--plan-exit-code", type=int, default=0, help="Terraform plan exit code")
     parser.add_argument("--plan-sha256", default="", help="SHA256 of tfplan binary")
     parser.add_argument("--tag-validation-status", default="UNKNOWN", help="PASS or FAIL")
+    parser.add_argument("--source-integrity-status", default="UNKNOWN", help="PASS or FAIL")
+    parser.add_argument("--aws-provider-version", default="", help="Selected AWS provider version")
     parser.add_argument("--aws-identity-json", default="{}", help="JSON from aws sts get-caller-identity")
     parser.add_argument("--terraform-version", default="unknown", help="Terraform CLI version")
     parser.add_argument("--state-bucket", default="", help="S3 state bucket name")
     parser.add_argument("--state-key", default="", help="S3 state key path")
+    parser.add_argument("--taggable-checked", type=int, default=0, help="Taggable resources checked")
+    parser.add_argument("--resources-failed", type=int, default=0, help="Resources that failed tag validation")
     args = parser.parse_args()
 
     scan_id: str = args.scan_id
@@ -91,6 +102,24 @@ def main() -> None:
     }
 
     # ------------------------------------------------------------------ #
+    # Tagging section                                                     #
+    # ------------------------------------------------------------------ #
+    tagging_section = {
+        "injection_mode": INJECTION_MODE,
+        "source_repository_modified": False,
+        "aws_provider_minimum_version": MINIMUM_AWS_PROVIDER_VERSION,
+        "aws_provider_selected_version": args.aws_provider_version,
+        "required_tags": {
+            "scan-id": scan_id,
+            "managed-by": "iac-security-framework",
+        },
+        "plan_validation_status": args.tag_validation_status,
+        "taggable_resources_checked": args.taggable_checked,
+        "resources_failed": args.resources_failed,
+        "source_integrity_status": args.source_integrity_status,
+    }
+
+    # ------------------------------------------------------------------ #
     # Build evidence                                                      #
     # ------------------------------------------------------------------ #
     evidence = {
@@ -109,14 +138,20 @@ def main() -> None:
         },
         "aws": aws_section,
         "terraform": terraform_section,
-        "tagging": {
-            "required": {
-                "scan-id": scan_id,
-                "managed-by": "iac-security-framework",
-            },
-            "validation_status": args.tag_validation_status,
-        },
+        "tagging": tagging_section,
         "deployment_status": "NOT_APPLIED",
+        "future_apply_command": (
+            "env "
+            '"TF_AWS_DEFAULT_TAGS_scan-id=${SCAN_ID}" '
+            '"TF_AWS_DEFAULT_TAGS_managed-by=iac-security-framework" '
+            "terraform apply -input=false tfplan"
+        ),
+        "future_runtime_inventory_command": (
+            "aws resourcegroupstaggingapi get-resources "
+            "--region \"$AWS_REGION\" "
+            "--tag-filters \"Key=scan-id,Values=${SCAN_ID}\" "
+            "--output json"
+        ),
     }
 
     out_path = deploy_dir / "deployment-plan-evidence.json"
@@ -126,14 +161,17 @@ def main() -> None:
     # Console output                                                      #
     # ------------------------------------------------------------------ #
     print(f"\n{'='*60}")
-    print(f"  TERRAFORM DEPLOYMENT PLAN")
+    print(f"  TERRAFORM DEPLOYMENT PLAN EVIDENCE")
     print(f"{'='*60}")
     print(f"  SCAN_ID              : {scan_id}")
     print(f"  AWS Account          : {aws_section['account_id']}")
     print(f"  AWS Region           : {aws_section['region']}")
     print(f"  State Key            : {terraform_section['state_key']}")
     print(f"  Plan Status          : {plan_status}")
+    print(f"  Tag Injection Mode   : {INJECTION_MODE}")
     print(f"  Tag Validation       : {args.tag_validation_status}")
+    print(f"  Source Integrity     : {args.source_integrity_status}")
+    print(f"  Source Modified      : False")
     print(f"  Deployment Status    : NOT_APPLIED")
     print(f"  Evidence             : {out_path}")
     print(f"{'='*60}\n")

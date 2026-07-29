@@ -10,8 +10,7 @@ a forensic manifest:
 Usage:
     python scripts/deployment/hash_deployment_evidence.py <SCAN_ID> [--plan-dir <DIR>]
 
-The --plan-dir argument specifies where the Terraform plan binary and
-generated plan files live (defaults to the current working directory).
+The --plan-dir argument specifies where the Terraform plan binary lives.
 """
 
 import argparse
@@ -26,10 +25,13 @@ from scripts.utils.evidence import sha256_file, safe_write_json, utc_now_iso
 # Files inside reports/deployment/<SCAN_ID>/
 EVIDENCE_FILES = [
     "deployment-contract-validation.json",
+    "aws-provider-validation.json",
+    "deployment-source-integrity.json",
     "tag-validation.json",
     "deployment-plan-evidence.json",
     "terraform-plan.json",
     "terraform-plan.txt",
+    "terraform-plan.sha256",
 ]
 
 # Files that live in the Terraform working directory (plan-dir)
@@ -72,6 +74,7 @@ def main() -> None:
         })
 
     manifest = {
+        "schema_version": "1.0",
         "scan_id": scan_id,
         "algorithm": "SHA256",
         "generated_at_utc": utc_now_iso(),
