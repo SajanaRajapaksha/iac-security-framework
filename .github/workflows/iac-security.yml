@@ -8,17 +8,32 @@
 # calculates a pre-deployment risk score, and produces forensic-ready evidence
 # at every stage.
 #
-# A second job (terraform-plan) authenticates to AWS via OIDC, initialises a
-# scan-isolated S3 backend, generates a saved Terraform plan, validates
-# SCAN_ID resource tags, and produces deployment plan evidence — all without
-# ever running `terraform apply`.
+# terraform-plan job: authenticates to AWS via OIDC, initialises a
+# scan-isolated S3 backend, injects framework tags via TF_AWS_DEFAULT_TAGS_*,
+# generates a saved Terraform plan, validates tag propagation, verifies source
+# integrity, and produces deployment plan evidence.
+#
+# terraform-apply job (manual approval required via GitHub Environment
+# 'research-aws-deployment'): downloads the exact saved plan, verifies the
+# plan SHA-256, applies using the same framework tags, captures Terraform
+# state, discovers and verifies deployed resources, reconciles inventories,
+# generates the final deployment validation decision, and hashes all evidence.
 #
 # Static analysis is NON-BLOCKING — findings are preserved as evidence.
-# Policy-as-Code runs in ADVISORY mode by default — violations are recorded
-# as findings but do not stop the pipeline.  Set POLICY_ENFORCEMENT_MODE
-# to 'blocking' to enforce hard pipeline failure on policy violations.
-#
+# Policy-as-Code runs in ADVISORY mode by default.
 # Every step is traceable via SCAN_ID.
+# =============================================================================
+#
+# GitHub Repository Variables required:
+#   AWS_REGION          — AWS deployment region
+#   AWS_ROLE_ARN        — IAM role for plan-stage OIDC auth
+#   AWS_APPLY_ROLE_ARN  — IAM role for apply-stage (falls back to AWS_ROLE_ARN)
+#   TF_STATE_BUCKET     — S3 bucket for Terraform backend state
+#
+# GitHub Environment:
+#   research-aws-deployment — used to scope deployment credentials and provide
+#   an optional protection layer. Required reviewers are not enforced for this
+#   research scope; the environment may be configured with reviewers if desired.
 # =============================================================================
 
 name: IaC Security Framework
@@ -38,6 +53,15 @@ on:
         description: "Branch to scan"
         required: false
         default: "main"
+      allow_research_exception:
+        description: "Allow deployment of intentionally insecure IaC for controlled research"
+        type: boolean
+        required: true
+        default: false
+      research_exception_reason:
+        description: "Reason for controlled research deployment (required when allow_research_exception=true)"
+        required: false
+        default: ""
 
 jobs:
   security-pipeline:
@@ -601,4 +625,514 @@ jobs:
           path: |
             ${{ steps.deployment_contract.outputs.deployment_root }}/tfplan
             reports/deployment/${{ env.SCAN_ID }}/
+
+
+  # ====================================================================
+  # TERRAFORM APPLY JOB — CONTROLLED DEPLOYMENT
+  #
+  # Uses GitHub Environment 'research-aws-deployment' to scope deployment
+  # credentials. Required reviewers are optional for this research scope.
+  # To add a reviewer gate, configure it in:
+  #   Repository Settings → Environments → research-aws-deployment
+  #
+  # Stages:
+  #   25. Download and verify exact saved plan artifact
+  #   26. Re-authenticate to AWS via OIDC (fresh credentials per job)
+  #   27. Validate deployment authorization
+  #   28. Reinitialize Terraform with same S3 backend
+  #   29. Apply exact saved plan with framework tag injection
+  #   30. Capture and sanitize Terraform state
+  #   31. Discover tagged AWS resources
+  #   32. Verify deployed resources via service APIs
+  #   33. Generate final deployment validation decision
+  #   34. Render deployment summary
+  #   35. Hash all apply and validation evidence
+  #   36. Upload deployment evidence artifacts
+  #
+  # terraform apply is implemented ONLY in this job.
+  # The exact saved tfplan from terraform-plan is used — never a new plan.
+  # ====================================================================
+
+  terraform-apply:
+    name: Controlled Terraform Apply
+    needs:
+      - security-pipeline
+      - terraform-plan
+    runs-on: ubuntu-latest
+
+    # Only on push/dispatch to dev — never on PRs.
+    if: >
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/dev'
+
+    # GitHub Environment scopes deployment credentials.
+    # Required reviewers are optional — configure them in the GitHub UI if needed.
+    environment:
+      name: research-aws-deployment
+
+    permissions:
+      id-token: write
+      contents: read
+      actions: read
+
+    env:
+      SCAN_ID: ${{ needs.security-pipeline.outputs.scan_id }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      RESEARCH_EXCEPTION: ${{ github.event.inputs.allow_research_exception || 'false' }}
+      RESEARCH_REASON: ${{ github.event.inputs.research_exception_reason || '' }}
+
+    steps:
+      # ================================================================
+      # SETUP
+      # ================================================================
+
+      - name: Checkout framework repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Print apply parameters
+        run: |
+          echo "============================================================"
+          echo "  CONTROLLED TERRAFORM APPLY JOB"
+          echo "============================================================"
+          echo "  SCAN_ID           = $SCAN_ID"
+          echo "  AWS_REGION        = $AWS_REGION"
+          echo "  STATE_BUCKET      = $TF_STATE_BUCKET"
+          echo "  STATE_KEY         = research/$SCAN_ID/terraform.tfstate"
+          echo "  PLAN_ARTIFACT     = terraform-plan-$SCAN_ID"
+          echo "  ENVIRONMENT       = research-aws-deployment"
+          echo "  RESEARCH_EXCEPTION= $RESEARCH_EXCEPTION"
+          echo "============================================================"
+
+      # ================================================================
+      # STAGE 25: DOWNLOAD AND VERIFY EXACT SAVED PLAN ARTIFACT
+      # ================================================================
+
+      - name: "Stage 25: Download scanned deployment source"
+        uses: actions/download-artifact@v4
+        with:
+          name: deployment-source-${{ env.SCAN_ID }}
+          path: deployment-source/
+
+      - name: "Stage 25: Download scan metadata"
+        uses: actions/download-artifact@v4
+        with:
+          name: scan-metadata-${{ env.SCAN_ID }}
+          path: repositories/metadata/${{ env.SCAN_ID }}/
+
+      - name: "Stage 25: Download risk reports"
+        uses: actions/download-artifact@v4
+        with:
+          name: risk-reports-${{ env.SCAN_ID }}
+          path: reports/risk/${{ env.SCAN_ID }}/
+        continue-on-error: true
+
+      - name: "Stage 25: Download Terraform plan artifact"
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-plan-${{ env.SCAN_ID }}
+          path: plan-artifact/
+
+      - name: "Stage 25: Locate and stage plan files"
+        id: stage_plan
+        run: |
+          # The artifact may contain: tfplan, reports/deployment/<SCAN_ID>/*
+          # Find tfplan robustly
+          TFPLAN=$(find plan-artifact -name "tfplan" -type f | head -1)
+          SHA256_FILE=$(find plan-artifact -name "terraform-plan.sha256" -type f | head -1)
+          EVIDENCE_FILE=$(find plan-artifact -name "deployment-plan-evidence.json" -type f | head -1)
+
+          echo "Found tfplan       : $TFPLAN"
+          echo "Found sha256       : $SHA256_FILE"
+          echo "Found evidence     : $EVIDENCE_FILE"
+
+          echo "tfplan_path=$TFPLAN" >> "$GITHUB_OUTPUT"
+          echo "sha256_path=$SHA256_FILE" >> "$GITHUB_OUTPUT"
+          echo "evidence_path=$EVIDENCE_FILE" >> "$GITHUB_OUTPUT"
+
+          # Restore plan evidence reports
+          PLAN_REPORTS=$(find plan-artifact -path "*/deployment/$SCAN_ID" -type d | head -1)
+          if [ -n "$PLAN_REPORTS" ]; then
+            mkdir -p "reports/deployment/$SCAN_ID"
+            cp -r "$PLAN_REPORTS/"* "reports/deployment/$SCAN_ID/" 2>/dev/null || true
+          fi
+
+      - name: "Stage 25: Verify plan artifact integrity"
+        run: |
+          python scripts/deployment/verify_plan_artifact.py \
+            "$SCAN_ID" \
+            "${{ steps.stage_plan.outputs.tfplan_path }}" \
+            "${{ steps.stage_plan.outputs.sha256_path }}" \
+            "${{ steps.stage_plan.outputs.evidence_path }}"
+
+      # ================================================================
+      # STAGE 26: RE-AUTHENTICATE TO AWS VIA OIDC
+      # Each job runs on a separate runner — credentials do not transfer.
+      # Support AWS_APPLY_ROLE_ARN for least-privilege apply role;
+      # fall back to AWS_ROLE_ARN when not configured.
+      # ================================================================
+
+      - name: "Stage 26: Authenticate to AWS via OIDC"
+        uses: aws-actions/configure-aws-credentials@v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN || vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: terraform-apply-${{ env.SCAN_ID }}
+
+      - name: "Stage 26: Verify AWS identity and account match"
+        id: aws_identity
+        run: |
+          echo "Verifying AWS OIDC authentication for apply..."
+          AWS_IDENTITY=$(aws sts get-caller-identity --output json)
+          AWS_IDENTITY_COMPACT=$(echo "$AWS_IDENTITY" | jq -c '.')
+          echo "aws_identity=$AWS_IDENTITY_COMPACT" >> "$GITHUB_OUTPUT"
+
+          APPLY_ACCOUNT=$(echo "$AWS_IDENTITY" | jq -r '.Account')
+          echo "apply_account=$APPLY_ACCOUNT" >> "$GITHUB_OUTPUT"
+          echo "Apply job AWS Account: $APPLY_ACCOUNT"
+
+          # Compare with plan-stage account from evidence
+          EVIDENCE_FILE="${{ steps.stage_plan.outputs.evidence_path }}"
+          if [ -z "$EVIDENCE_FILE" ]; then
+            EVIDENCE_FILE="reports/deployment/$SCAN_ID/deployment-plan-evidence.json"
+          fi
+          PLAN_ACCOUNT=$(python3 -c "
+          import json, sys
+          try:
+            data = json.load(open('$EVIDENCE_FILE'))
+            print(data.get('aws', {}).get('account_id', ''))
+          except Exception:
+            print('')
+          " 2>/dev/null || echo "")
+
+          if [ -n "$PLAN_ACCOUNT" ] && [ "$APPLY_ACCOUNT" != "$PLAN_ACCOUNT" ]; then
+            echo "ERROR: AWS account mismatch!"
+            echo "  Plan account  : $PLAN_ACCOUNT"
+            echo "  Apply account : $APPLY_ACCOUNT"
+            # Generate identity validation report showing failure
+            mkdir -p reports/deployment/$SCAN_ID
+            python3 -c "
+          import json
+          from datetime import datetime, timezone
+          result = {
+            'schema_version': '1.0',
+            'scan_id': '$SCAN_ID',
+            'generated_at_utc': datetime.now(timezone.utc).isoformat(),
+            'status': 'FAIL',
+            'apply_account_id': '$APPLY_ACCOUNT',
+            'plan_account_id': '$PLAN_ACCOUNT',
+            'account_match': False,
+            'error': 'AWS_ACCOUNT_MISMATCH',
+          }
+          json.dump(result, open('reports/deployment/$SCAN_ID/apply-aws-identity-validation.json', 'w'), indent=2)
+          "
+            exit 1
+          fi
+
+          # Generate identity validation report
+          python3 -c "
+          import json
+          from datetime import datetime, timezone
+          import os
+          identity = $AWS_IDENTITY_COMPACT
+          result = {
+            'schema_version': '1.0',
+            'scan_id': '$SCAN_ID',
+            'generated_at_utc': datetime.now(timezone.utc).isoformat(),
+            'status': 'PASS',
+            'apply_account_id': identity.get('Account'),
+            'plan_account_id': identity.get('Account'),
+            'assumed_role_arn': identity.get('Arn'),
+            'user_id': identity.get('UserId'),
+            'account_match': True,
+            'region': os.environ.get('AWS_REGION', ''),
+          }
+          import os; os.makedirs('reports/deployment/$SCAN_ID', exist_ok=True)
+          json.dump(result, open('reports/deployment/$SCAN_ID/apply-aws-identity-validation.json', 'w'), indent=2)
+          "
+          echo "AWS identity verified. Account: $APPLY_ACCOUNT"
+
+      # ================================================================
+      # STAGE 27: VALIDATE DEPLOYMENT AUTHORIZATION
+      # ================================================================
+
+      - name: "Stage 27: Validate deployment authorization"
+        run: |
+          AUTH_TYPE="STANDARD_APPROVAL"
+          REASON_ARG=""
+          if [ "$RESEARCH_EXCEPTION" = "true" ]; then
+            AUTH_TYPE="RESEARCH_EXCEPTION"
+            REASON_ARG="--research-exception-reason \"$RESEARCH_REASON\""
+          fi
+
+          python scripts/deployment/validate_apply_authorization.py "$SCAN_ID" \
+            --authorization-type "$AUTH_TYPE" \
+            --research-exception-reason "$RESEARCH_REASON" \
+            --github-actor "$GITHUB_ACTOR" \
+            --github-run-id "$GITHUB_RUN_ID" \
+            --github-run-attempt "$GITHUB_RUN_ATTEMPT"
+
+      # ================================================================
+      # STAGE 28: REINITIALIZE TERRAFORM WITH SAME S3 BACKEND
+      # ================================================================
+
+      - name: "Stage 28: Resolve deployment contract"
+        id: deployment_contract
+        run: python scripts/deployment/validate_deployment_contract.py "$SCAN_ID"
+
+      - name: "Stage 28: Source integrity pre-apply check"
+        run: |
+          python scripts/deployment/validate_source_integrity.py \
+            "$SCAN_ID" \
+            "${{ steps.deployment_contract.outputs.deployment_root }}" \
+            --save
+
+      - name: "Stage 28: Terraform init — same S3 backend"
+        working-directory: ${{ steps.deployment_contract.outputs.deployment_root }}
+        run: |
+          terraform init \
+            -input=false \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="key=research/${SCAN_ID}/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="use_lockfile=true"
+
+      - name: "Stage 28: Validate AWS provider version"
+        run: |
+          python scripts/deployment/validate_aws_provider_version.py \
+            "$SCAN_ID" \
+            "${{ steps.deployment_contract.outputs.deployment_root }}"
+
+      - name: "Stage 28: Verify source integrity before apply"
+        run: |
+          python scripts/deployment/validate_source_integrity.py \
+            "$SCAN_ID" \
+            "${{ steps.deployment_contract.outputs.deployment_root }}" \
+            --verify
+
+      - name: "Stage 28: Restore tfplan to deployment root"
+        run: |
+          TFPLAN_SRC="${{ steps.stage_plan.outputs.tfplan_path }}"
+          DEPLOY_ROOT="${{ steps.deployment_contract.outputs.deployment_root }}"
+          if [ -f "$TFPLAN_SRC" ]; then
+            cp "$TFPLAN_SRC" "$DEPLOY_ROOT/tfplan"
+            echo "Restored tfplan to $DEPLOY_ROOT/tfplan"
+          else
+            echo "ERROR: tfplan not found at $TFPLAN_SRC"
+            exit 1
+          fi
+
+      # ================================================================
+      # STAGE 29: APPLY EXACT SAVED PLAN WITH FRAMEWORK TAG INJECTION
+      # Uses the same TF_AWS_DEFAULT_TAGS_* env vars as the plan stage.
+      # ================================================================
+
+      - name: "Stage 29: Terraform apply — exact saved plan"
+        id: tf_apply
+        working-directory: ${{ steps.deployment_contract.outputs.deployment_root }}
+        run: |
+          echo "============================================================"
+          echo "  TERRAFORM APPLY — EXACT SAVED PLAN"
+          echo "============================================================"
+          echo "  SCAN_ID     : ${SCAN_ID}"
+          echo "  scan-id     : ${SCAN_ID} (injected via TF_AWS_DEFAULT_TAGS)"
+          echo "  managed-by  : iac-security-framework"
+          echo "  Plan SHA    : $(cat '${SCAN_ID}.tfplan.sha256' 2>/dev/null || echo N/A)"
+          echo "============================================================"
+
+          APPLY_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          echo "apply_start_time=$APPLY_START" >> "$GITHUB_OUTPUT"
+
+          APPLY_OUTPUT="/tmp/terraform-apply-output.txt"
+
+          set -o pipefail
+          env \
+            "TF_AWS_DEFAULT_TAGS_scan-id=${SCAN_ID}" \
+            "TF_AWS_DEFAULT_TAGS_managed-by=iac-security-framework" \
+            terraform apply \
+              -input=false \
+              -auto-approve \
+              tfplan 2>&1 | tee "$APPLY_OUTPUT"
+          APPLY_EXIT_CODE=${PIPESTATUS[0]}
+
+          APPLY_FINISH=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          echo "apply_finish_time=$APPLY_FINISH" >> "$GITHUB_OUTPUT"
+          echo "apply_exit_code=$APPLY_EXIT_CODE" >> "$GITHUB_OUTPUT"
+
+          # Always copy output to reports
+          mkdir -p "${GITHUB_WORKSPACE}/reports/deployment/${SCAN_ID}"
+          cp "$APPLY_OUTPUT" "${GITHUB_WORKSPACE}/reports/deployment/${SCAN_ID}/terraform-apply.txt"
+
+          exit $APPLY_EXIT_CODE
+
+      - name: "Stage 29: Generate apply evidence"
+        if: always()
+        id: tf_versions_apply
+        run: |
+          TF_VER=$(terraform version -json | python3 -c "import sys,json; print(json.load(sys.stdin)['terraform_version'])")
+          AWS_PROV_VER=$(python3 -c "
+          import json
+          data = json.load(open('reports/deployment/${{ env.SCAN_ID }}/aws-provider-validation.json'))
+          print(data.get('selected_version', 'unknown'))
+          " 2>/dev/null || echo "unknown")
+
+          AUTH_TYPE=$(python3 -c "
+          import json
+          data = json.load(open('reports/deployment/${{ env.SCAN_ID }}/deployment-authorization.json'))
+          print(data.get('authorization_type', 'STANDARD_APPROVAL'))
+          " 2>/dev/null || echo "STANDARD_APPROVAL")
+
+          python scripts/deployment/generate_apply_evidence.py "$SCAN_ID" \
+            --apply-exit-code "${{ steps.tf_apply.outputs.apply_exit_code || '1' }}" \
+            --plan-sha256 "$(cat '${{ steps.stage_plan.outputs.sha256_path }}' 2>/dev/null | head -1)" \
+            --terraform-version "$TF_VER" \
+            --aws-provider-version "$AWS_PROV_VER" \
+            --aws-identity-json '${{ steps.aws_identity.outputs.aws_identity }}' \
+            --state-bucket "$TF_STATE_BUCKET" \
+            --state-key "research/$SCAN_ID/terraform.tfstate" \
+            --deployment-root "${{ steps.deployment_contract.outputs.deployment_root }}" \
+            --apply-start-time "${{ steps.tf_apply.outputs.apply_start_time }}" \
+            --apply-finish-time "${{ steps.tf_apply.outputs.apply_finish_time }}" \
+            --authorization-type "$AUTH_TYPE" \
+            --apply-output-path "reports/deployment/$SCAN_ID/terraform-apply.txt"
+
+      # ================================================================
+      # STAGE 30: CAPTURE TERRAFORM STATE (sensitive — short retention)
+      # ================================================================
+
+      - name: "Stage 30: Capture Terraform state evidence"
+        if: steps.tf_apply.outputs.apply_exit_code == '0'
+        working-directory: ${{ steps.deployment_contract.outputs.deployment_root }}
+        run: |
+          DEPLOY_DIR="${GITHUB_WORKSPACE}/reports/deployment/${SCAN_ID}"
+          mkdir -p "$DEPLOY_DIR"
+
+          echo "Pulling Terraform state..."
+          terraform state pull > "$DEPLOY_DIR/terraform-state-pull.json"
+          sha256sum "$DEPLOY_DIR/terraform-state-pull.json" | cut -d' ' -f1 > "$DEPLOY_DIR/terraform-state.sha256"
+
+          echo "Building state address list..."
+          terraform state list > "$DEPLOY_DIR/terraform-state-addresses.txt" 2>/dev/null || true
+
+          echo "Building state show JSON..."
+          terraform show -json > "$DEPLOY_DIR/deployed-state.json"
+
+          echo "Capturing outputs..."
+          terraform output -json > "$DEPLOY_DIR/terraform-outputs.json" 2>/dev/null || echo "{}" > "$DEPLOY_DIR/terraform-outputs.json"
+
+          echo "State captured:"
+          wc -l "$DEPLOY_DIR/terraform-state-addresses.txt"
+
+      - name: "Stage 30: Build Terraform state resource inventory"
+        if: steps.tf_apply.outputs.apply_exit_code == '0'
+        run: |
+          python scripts/deployment/build_state_resource_inventory.py \
+            "$SCAN_ID" \
+            "reports/deployment/$SCAN_ID/deployed-state.json"
+
+      # ================================================================
+      # STAGE 31: DISCOVER TAGGED AWS RESOURCES
+      # ================================================================
+
+      - name: "Stage 31: Discover AWS resources by framework tags"
+        if: steps.tf_apply.outputs.apply_exit_code == '0'
+        run: |
+          python scripts/deployment/discover_tagged_aws_resources.py \
+            "$SCAN_ID" \
+            --region "$AWS_REGION"
+
+      # ================================================================
+      # STAGE 32: RECONCILE AND VERIFY DEPLOYED RESOURCES
+      # ================================================================
+
+      - name: "Stage 32: Reconcile state and tag-discovery inventories"
+        if: steps.tf_apply.outputs.apply_exit_code == '0'
+        run: |
+          python scripts/deployment/reconcile_resource_inventories.py \
+            "$SCAN_ID" \
+            "reports/deployment/$SCAN_ID/terraform-state-resource-inventory.json" \
+            "reports/deployment/$SCAN_ID/tagged-aws-resource-inventory.json"
+
+      - name: "Stage 32: Verify deployed resources via service APIs"
+        if: steps.tf_apply.outputs.apply_exit_code == '0'
+        run: |
+          python scripts/deployment/verify_deployed_resources.py \
+            "$SCAN_ID" \
+            "reports/deployment/$SCAN_ID/terraform-state-resource-inventory.json" \
+            --region "$AWS_REGION"
+
+      # ================================================================
+      # STAGE 33: GENERATE DEPLOYMENT VALIDATION DECISION
+      # ================================================================
+
+      - name: "Stage 33: Generate deployment validation decision"
+        if: steps.tf_apply.outputs.apply_exit_code == '0'
+        run: |
+          python scripts/deployment/generate_deployment_validation.py "$SCAN_ID"
+
+      # ================================================================
+      # STAGE 34: DEPLOYMENT SUMMARY
+      # ================================================================
+
+      - name: "Stage 34: Render deployment summary"
+        if: always()
+        run: python scripts/deployment/render_deployment_summary.py "$SCAN_ID"
+
+      # ================================================================
+      # STAGE 35: HASH ALL EVIDENCE
+      # ================================================================
+
+      - name: "Stage 35: Hash all deployment and validation evidence"
+        if: always()
+        run: python scripts/deployment/hash_apply_evidence.py "$SCAN_ID"
+
+      # ================================================================
+      # STAGE 36: UPLOAD EVIDENCE ARTIFACTS
+      # Sensitive state data uploaded with shorter retention period.
+      # ================================================================
+
+      - name: "Stage 36: Upload deployment evidence"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-deployment-${{ env.SCAN_ID }}
+          retention-days: 30
+          path: |
+            reports/deployment/${{ env.SCAN_ID }}/plan-artifact-verification.json
+            reports/deployment/${{ env.SCAN_ID }}/apply-aws-identity-validation.json
+            reports/deployment/${{ env.SCAN_ID }}/deployment-authorization.json
+            reports/deployment/${{ env.SCAN_ID }}/terraform-apply.txt
+            reports/deployment/${{ env.SCAN_ID }}/deployment-apply-evidence.json
+            reports/deployment/${{ env.SCAN_ID }}/terraform-state-resource-inventory.json
+            reports/deployment/${{ env.SCAN_ID }}/tagged-aws-resource-inventory.json
+            reports/deployment/${{ env.SCAN_ID }}/deployment-resource-reconciliation.json
+            reports/deployment/${{ env.SCAN_ID }}/deployed-resource-verification.json
+            reports/deployment/${{ env.SCAN_ID }}/deployment-validation.json
+            reports/deployment/${{ env.SCAN_ID }}/deployment-apply-evidence-manifest.json
+
+      - name: "Stage 36: Upload sensitive state evidence (short retention)"
+        if: steps.tf_apply.outputs.apply_exit_code == '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-sensitive-state-${{ env.SCAN_ID }}
+          retention-days: 7
+          path: |
+            reports/deployment/${{ env.SCAN_ID }}/terraform-state-pull.json
+            reports/deployment/${{ env.SCAN_ID }}/terraform-state.sha256
+            reports/deployment/${{ env.SCAN_ID }}/deployed-state.json
+            reports/deployment/${{ env.SCAN_ID }}/terraform-outputs.json
+            reports/deployment/${{ env.SCAN_ID }}/terraform-state-addresses.txt
 
