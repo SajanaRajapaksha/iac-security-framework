@@ -19,7 +19,7 @@ pyyaml>=6.0
 jsonschema>=4.20.0
 
 # ---- AWS SDK — required for deployment resource discovery and verification ----
-boto3>=1.34.0
+boto3
 
 # ---- Runtime Security Scanning ----
 prowler==3.12.1
