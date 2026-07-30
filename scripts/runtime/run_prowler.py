@@ -75,8 +75,9 @@ def run_prowler(scan_id: str) -> None:
         "prowler",
         "aws",
         "-f", aws_region,
-        "-M", "csv", "json-ocsf",
-        "-O", str(prowler_raw_dir)
+        "-M", "json",
+        "-o", str(prowler_raw_dir),
+        "--no-banner"
     ]
 
     prowler_version = get_prowler_version()
