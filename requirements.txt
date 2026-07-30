@@ -22,7 +22,7 @@ jsonschema>=4.20.0
 boto3
 
 # ---- Runtime Security Scanning ----
-prowler==3.12.1
+prowler==5.28.1
 
 # =============================================================================
 # TOOL DEPENDENCIES (installed separately — not via pip):

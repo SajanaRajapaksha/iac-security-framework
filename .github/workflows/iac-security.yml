@@ -1043,37 +1043,6 @@ jobs:
             "$SCAN_ID" \
             "reports/deployment/$SCAN_ID/deployed-state.json"
           
-      - name: "Stage 30.5: Verify deployment tags"
-        if: steps.tf_apply.outputs.apply_exit_code == '0'
-        run: |
-          python scripts/deployment/verify_deployment_tags.py \
-            "$SCAN_ID" \
-            "reports/deployment/$SCAN_ID/terraform-state-resource-inventory.json"
-          
-          echo "Diagnostic: Inventory summary"
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          import os
-
-          scan_id = os.environ["SCAN_ID"]
-          path = Path(f"reports/deployment/{scan_id}/terraform-state-resource-inventory.json")
-          if path.exists():
-              data = json.loads(path.read_text())
-              print("Inventory summary:", data.get("summary"))
-              print("Resource count:", len(data.get("resources", [])))
-              for resource in data.get("resources", []):
-                  print(
-                      resource.get("terraform_address"),
-                      resource.get("resource_id"),
-                      resource.get("resource_arn"),
-                      resource.get("aws_service"),
-                      resource.get("aws_region"),
-                  )
-          else:
-              print("Diagnostic: Inventory file not found.")
-          PY
-
       # ================================================================
       # STAGE 31: DISCOVER TAGGED AWS RESOURCES
       # ================================================================
@@ -1172,14 +1141,14 @@ jobs:
       # Runs only if Terraform Apply was successful.
       # ================================================================
 
-      - name: "Stage 37: Build deployment resource manifest"
-        if: steps.tf_apply.outputs.apply_exit_code == '0'
-        run: python scripts/runtime/build_deployment_manifest.py "$SCAN_ID"
-
       - name: "Stage 38: Install and Verify Prowler"
         if: steps.tf_apply.outputs.apply_exit_code == '0'
         run: |
-          pip install "prowler==4.3.4"
+          set -euo pipefail
+          
+          python -m pip install --upgrade pip
+          python -m pip install "prowler==5.28.1"
+          
           echo "Verifying Prowler installation..."
           prowler -v
           
@@ -1187,13 +1156,33 @@ jobs:
           python - <<'PY'
           import boto3
           import botocore
+          import sys
+          print("Python:", sys.version)
           print("boto3:", boto3.__version__)
           print("botocore:", botocore.__version__)
           PY
           
-          echo "Verifying Prowler AWS module..."
-          prowler aws --help > /dev/null
-          echo "Prowler is installed and functioning correctly."
+          python -m pip check
+
+      - name: "Stage 38.5: Verify Prowler CLI compatibility"
+        if: steps.tf_apply.outputs.apply_exit_code == '0'
+        run: |
+          set -euo pipefail
+          prowler aws --help > reports/runtime/$SCAN_ID/prowler-aws-help.txt || true
+          
+          for option in \
+            "--resource-tags" \
+            "--filter-region" \
+            "--output-modes" \
+            "--output-directory" \
+            "--no-banner"
+          do
+            if ! grep -q -- "$option" reports/runtime/$SCAN_ID/prowler-aws-help.txt; then
+              echo "::error::Installed Prowler does not support $option"
+              exit 1
+            fi
+          done
+          echo "Required Prowler CLI options are supported."
 
       - name: "Stage 39: Run Prowler scan"
         if: steps.tf_apply.outputs.apply_exit_code == '0'
@@ -1217,4 +1206,12 @@ jobs:
         with:
           name: terraform-runtime-${{ env.SCAN_ID }}
           retention-days: 30
-          path: reports/runtime/${{ env.SCAN_ID }}/
+          path: |
+            reports/runtime/${{ env.SCAN_ID }}/scope/tagged-resources.json
+            reports/runtime/${{ env.SCAN_ID }}/prowler/prowler-execution.json
+            reports/runtime/${{ env.SCAN_ID }}/prowler/stdout.log
+            reports/runtime/${{ env.SCAN_ID }}/prowler/stderr.log
+            reports/runtime/${{ env.SCAN_ID }}/prowler/raw/
+            reports/runtime/${{ env.SCAN_ID }}/normalized/runtime-findings.json
+            reports/runtime/${{ env.SCAN_ID }}/normalized/runtime-findings-summary.json
+            reports/runtime/${{ env.SCAN_ID }}/normalized/runtime-operational-error.json

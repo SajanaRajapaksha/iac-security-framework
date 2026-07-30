@@ -99,13 +99,15 @@ The framework deploys all Terraform templates to an **isolated AWS sandbox accou
 
 ### 3.3 Resource Targeting
 
-After deployment, Prowler is configured to target resources explicitly tied to the current pipeline deployment. This is achieved through:
+After deployment, Prowler is configured to target resources explicitly tied to the current pipeline deployment. This is achieved exclusively through:
 
-1. **Tag Filtering**: Prowler scans only resources tagged with `scan-id` and `managed-by`.
-2. **ARN Fallback**: For resources that do not support tags, Prowler may optionally be scoped via specific ARNs.
-3. **Account Context**: An optional account-wide scan can be run to detect organization or account-level issues (e.g. root MFA).
+1. **Tag Filtering**: Prowler (open-source, executed locally in GitHub Actions) scans only resources tagged with `scan-id` and `managed-by` using its native `--resource-tags` argument.
+2. **AWS APIs**: Prowler queries AWS directly to identify and evaluate these tagged resources.
+3. **No Terraform Dependency**: Terraform state is *not* used for Prowler finding attribution. Any resource tagged with the correct `scan-id` is treated as part of the current deployment scope.
 
-**Important**: Tag filtering alone is *not* sufficient forensic proof. The framework strictly matches every Prowler finding against the Terraform state deployment manifest. If Prowler reports a finding for a resource that is *not* in the Terraform state manifest, it is classified as an **Unmatched Finding**. Unmatched findings do not automatically mean false positives; they simply mean the issue resides on infrastructure outside the current deployment scope.
+**Scope Limitations**: 
+- Tag-filtered scanning excludes account-level resources and resources that do not support tags.
+- Zero tagged resources discovered before the scan produces a `SCAN_SCOPE_EMPTY` operational error, meaning no security assessment was performed. It does not mean zero vulnerabilities.
 
 ---
 
@@ -146,18 +148,14 @@ When both agree, confidence in the finding is maximised. When they disagree, dri
 
 ### 4.4 Prowler Native Metadata and Outputs
 
-Prowler output is processed by `normalize_runtime_findings.py`:
-1. Prowler natively scans the live AWS environment (authenticated via GitHub OIDC temporary credentials).
-2. The framework explicitly extracts **native Prowler severity** (using it by default).
-3. The framework natively parses **Prowler compliance and benchmark mappings** (e.g., CIS, AWS Foundational Security Best Practices).
-4. The local framework registry is **supplementary**, used only for canonical control mapping, cross-tool correlation, or explicit local severity overrides.
-5. Findings are classified as:
-   - `DEPLOYMENT_FINDING`: Matched to the authoritative Terraform deployment manifest.
-   - `ACCOUNT_CONTEXT_FINDING`: Identified as an account-level misconfiguration.
-   - `UNMATCHED_FINDING`: Found by Prowler but not in the deployment manifest.
-   - `OPERATIONAL_ERROR`: Scanner crashes, AccessDenied, or unsupported APIs (these do *not* count as security findings).
-6. **Scan coverage** is calculated since tag-filtered scans may be partial if resources do not support tags.
-7. Findings are saved to `reports/runtime/<SCAN_ID>/normalized/normalized-runtime-findings.json`.
+Prowler 5.28.1 output is processed by `normalize_runtime_findings.py`:
+1. Prowler runs and outputs its results in **JSON-OCSF** format.
+2. The framework explicitly extracts **native Prowler severity** and **native Prowler compliance metadata**.
+3. Boto3 and Botocore versions are resolved automatically from Prowler-compatible dependencies. Their versions are printed and preserved in execution evidence.
+4. Prowler exit code `3` means success with findings. Unexpected exit codes (e.g., `2`) produce operational failures. An operational failure means no security conclusion is available; it does not mean zero risk.
+5. Every single finding, along with GitHub Actions annotations (`::error::`, `::warning::`, `::notice::`), is printed directly in the pipeline logs.
+6. The local framework registry is **supplementary**, used only for canonical control mapping or explicit local severity overrides.
+7. Findings are saved to `reports/runtime/<SCAN_ID>/normalized/runtime-findings.json`.
 
 ---
 
