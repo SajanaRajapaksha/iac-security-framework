@@ -1145,25 +1145,33 @@ jobs:
         if: steps.tf_apply.outputs.apply_exit_code == '0'
         run: python scripts/runtime/build_deployment_manifest.py "$SCAN_ID"
 
-      - name: "Stage 38: Run Prowler scan"
+      - name: "Stage 38: Install and Verify Prowler"
         if: steps.tf_apply.outputs.apply_exit_code == '0'
         run: |
           pip install prowler==4.3.4
-          python scripts/runtime/run_prowler.py "$SCAN_ID"
+          echo "Verifying Prowler installation..."
+          prowler -v
+          echo "Verifying Prowler AWS module..."
+          prowler aws --help > /dev/null
+          echo "Prowler is installed and functioning correctly."
 
-      - name: "Stage 39: Normalize runtime findings"
+      - name: "Stage 39: Run Prowler scan"
+        if: steps.tf_apply.outputs.apply_exit_code == '0'
+        run: python scripts/runtime/run_prowler.py "$SCAN_ID"
+
+      - name: "Stage 40: Normalize runtime findings"
         if: steps.tf_apply.outputs.apply_exit_code == '0'
         run: python scripts/runtime/normalize_runtime_findings.py "$SCAN_ID"
 
-      - name: "Stage 40: List runtime findings"
+      - name: "Stage 41: List runtime findings"
         if: always() && steps.tf_apply.outputs.apply_exit_code == '0'
         run: python scripts/runtime/list_runtime_findings.py "$SCAN_ID"
 
-      - name: "Stage 41: Hash runtime evidence"
+      - name: "Stage 42: Hash runtime evidence"
         if: always() && steps.tf_apply.outputs.apply_exit_code == '0'
         run: python scripts/runtime/generate_runtime_evidence.py "$SCAN_ID"
 
-      - name: "Stage 42: Upload runtime evidence artifacts"
+      - name: "Stage 43: Upload runtime evidence artifacts"
         if: always() && steps.tf_apply.outputs.apply_exit_code == '0'
         uses: actions/upload-artifact@v4
         with:
