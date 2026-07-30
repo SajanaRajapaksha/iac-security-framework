@@ -1261,3 +1261,29 @@ jobs:
             reports/runtime/${{ env.SCAN_ID }}/normalized/runtime-findings-summary.json
             reports/runtime/${{ env.SCAN_ID }}/normalized/runtime-operational-error.json
             reports/runtime/${{ env.SCAN_ID }}/risk/
+
+      - name: "Stage 44: Generate deterministic security review"
+        if: always() && steps.tf_apply.outputs.apply_exit_code == '0'
+        run: python scripts/review/generate_security_review.py "$SCAN_ID"
+
+      - name: "Stage 45: Generate AI remediation guidance"
+        id: ai_remediation
+        continue-on-error: true
+        if: always() && steps.tf_apply.outputs.apply_exit_code == '0'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_REMEDIATION_MODEL: ${{ vars.OPENAI_REMEDIATION_MODEL }}
+        run: python scripts/review/generate_ai_remediation.py "$SCAN_ID"
+
+      - name: "Stage 46: Render final security review"
+        if: always() && steps.tf_apply.outputs.apply_exit_code == '0'
+        run: python scripts/review/render_security_review.py "$SCAN_ID"
+
+      - name: "Stage 47: Upload review evidence artifacts"
+        if: always() && steps.tf_apply.outputs.apply_exit_code == '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-review-${{ env.SCAN_ID }}
+          retention-days: 30
+          path: |
+            reports/review/${{ env.SCAN_ID }}/
