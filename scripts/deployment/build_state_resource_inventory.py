@@ -130,23 +130,47 @@ def _verification_strategy(rtype: str) -> str:
     return mapping.get(rtype, "generic.unsupported")
 
 
-def process_resource_instance(instance: dict, module_address: str, resource: dict) -> dict:
-    """Extract a single resource instance record."""
-    attrs = instance.get("attributes") or {}
+def infer_aws_service(terraform_type: str) -> str:
+    """Infer the AWS service from the terraform resource type."""
+    if terraform_type in (
+        "aws_security_group", "aws_instance", "aws_vpc", "aws_subnet",
+        "aws_route_table", "aws_internet_gateway", "aws_network_acl"
+    ):
+        return "ec2"
+    if terraform_type in (
+        "aws_s3_bucket", "aws_s3_bucket_public_access_block",
+        "aws_s3_bucket_versioning", "aws_s3_bucket_server_side_encryption_configuration"
+    ):
+        return "s3"
+    if terraform_type in ("aws_iam_role", "aws_iam_policy", "aws_iam_user", "aws_iam_group"):
+        return "iam"
+    if terraform_type in ("aws_db_instance", "aws_rds_cluster"):
+        return "rds"
+    if terraform_type in ("aws_kms_key", "aws_kms_alias"):
+        return "kms"
+    if terraform_type == "aws_lambda_function":
+        return "lambda"
+    return "unknown"
+
+
+def process_resource_values(values: dict, module_address: str, resource: dict) -> dict:
+    """Extract a single resource record from a values dictionary."""
+    attrs = values
     rtype = resource.get("type", "")
     provider = resource.get("provider_name", "")
     mode = resource.get("mode", "managed")
 
-    # Build base address
-    resource_name = resource.get("name", "")
-    base_addr = f"{module_address}.{rtype}.{resource_name}" if module_address else f"{rtype}.{resource_name}"
-
-    # For count/for_each, use the index
-    index = instance.get("index_key")
-    if index is not None:
-        address = f"{base_addr}[{json.dumps(index)}]"
-    else:
-        address = base_addr
+    # Prioritize the exact address provided by Terraform in the JSON
+    address = resource.get("address")
+    if not address:
+        # Fallback if address is missing
+        resource_name = resource.get("name", "")
+        base_addr = f"{module_address}.{rtype}.{resource_name}" if module_address else f"{rtype}.{resource_name}"
+        index = resource.get("index")
+        if index is not None:
+            address = f"{base_addr}[{json.dumps(index)}]"
+        else:
+            address = base_addr
 
     tags = _extract_tags(attrs)
     arn = _extract_arn(attrs, rtype)
@@ -155,15 +179,29 @@ def process_resource_instance(instance: dict, module_address: str, resource: dic
     taggable = _resource_taggable(rtype, attrs)
 
     region = None
+    # 1. Check explicit region attributes (including availability_zone)
     for k in REGION_ATTRS:
         v = attrs.get(k)
         if isinstance(v, str) and v:
-            # strip AZ suffix if present e.g. eu-north-1a → eu-north-1
-            if len(v) > 0 and v[-1].isalpha() and v[-2] == '-':
-                region = v[:-1]
+            import re
+            # If it looks like an AZ (e.g. us-east-1a), strip the trailing letter
+            # A region ends in a digit (e.g. us-east-1)
+            az_match = re.match(r"^([a-z]{2}-[a-z]+-\d+)[a-z]$", v)
+            if az_match:
+                region = az_match.group(1)
             else:
                 region = v
             break
+            
+    # 2. Extract from ARN if not found
+    if not region and arn and "arn:aws:" in arn:
+        parts = arn.split(":")
+        if len(parts) > 3 and parts[3]:
+            region = parts[3]
+            
+    # 3. Fallback to AWS_REGION environment variable
+    if not region:
+        region = os.environ.get("AWS_REGION", "unknown")
 
     return {
         "terraform_address": address,
@@ -174,6 +212,7 @@ def process_resource_instance(instance: dict, module_address: str, resource: dic
         "resource_arn": arn,
         "resource_name": name,
         "aws_region": region,
+        "aws_service": infer_aws_service(rtype),
         "tags": tags,
         "taggable": taggable,
         "verification_strategy": _verification_strategy(rtype),
@@ -197,9 +236,11 @@ def walk_resources(state_data: dict) -> list[dict]:
             rtype = resource.get("type", "")
             if not rtype.startswith(AWS_PREFIX):
                 continue
-            for instance in resource.get("instances", []):
-                record = process_resource_instance(instance, parent_address, resource)
-                records.append(record)
+            
+            # Extract from `values` which is where terraform show -json puts them
+            values = resource.get("values") or {}
+            record = process_resource_values(values, parent_address, resource)
+            records.append(record)
 
         for child_module in module_obj.get("child_modules", []):
             child_address = child_module.get("address", "")

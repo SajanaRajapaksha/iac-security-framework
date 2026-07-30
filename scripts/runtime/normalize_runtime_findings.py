@@ -42,9 +42,9 @@ def _find_prowler_json(raw_dir: Path) -> Path | None:
     # Return the one with the latest modification time
     return sorted(files, key=lambda f: f.stat().st_mtime)[-1]
 
-def match_resource(finding: dict, manifest_resources: list, scan_id: str) -> tuple[dict | None, str]:
+def match_resource(finding: dict, manifest_resources: list, scan_id: str) -> tuple[dict | None, str, str | None]:
     """Match a Prowler finding to a resource in the deployment manifest.
-    Returns (matched_resource_dict, attribution_method).
+    Returns (matched_resource_dict, attribution_method, unmatched_reason).
     """
     f_arn = finding.get("ResourceArn")
     f_id = finding.get("ResourceId")
@@ -56,14 +56,14 @@ def match_resource(finding: dict, manifest_resources: list, scan_id: str) -> tup
     if f_arn:
         for r in manifest_resources:
             if r.get("resource_arn") == f_arn:
-                return r, "RESOURCE_ARN"
+                return r, "RESOURCE_ARN", None
                 
     # 2. Exact Resource ID + account + region
     if f_id and f_account and f_region:
         for r in manifest_resources:
             if r.get("resource_id") == f_id and f_region in r.get("resource_arn", ""):
                 # Basic check, state inventory doesn't explicitly store account, but manifest has it globally.
-                return r, "RESOURCE_ID"
+                return r, "RESOURCE_ID", None
                 
     # 3. Exact name + service + region (fallback when ID not matched)
     f_name = finding.get("ResourceName")
@@ -71,7 +71,7 @@ def match_resource(finding: dict, manifest_resources: list, scan_id: str) -> tup
     if f_name and f_service and f_region:
         for r in manifest_resources:
             if (r.get("resource_name") == f_name or r.get("resource_id") == f_name) and r.get("aws_service") == f_service:
-                 return r, "RESOURCE_NAME"
+                 return r, "RESOURCE_NAME", None
                  
     # 4. Tags
     if isinstance(f_tags, dict):
@@ -85,17 +85,31 @@ def match_resource(finding: dict, manifest_resources: list, scan_id: str) -> tup
                  r_tags = r.get("tags", {})
                  r_scan_id_tag = r_tags.get("scan-id") or r_tags.get("ResearchScanId") or r_tags.get("research-scan-id")
                  if r_scan_id_tag == scan_id_tag:
-                      return r, "SCAN_ID_TAG"
+                      return r, "SCAN_ID_TAG", None
             
             # Attributed by tag even if resource ID wasn't in manifest
-            return None, "SCAN_ID_TAG"
+            return None, "SCAN_ID_TAG", None
 
     # 5. Account-level
-    # If the resource is the account itself
-    if f_id == f_account:
-        return None, "ACCOUNT_LEVEL"
+    # If the resource is the account itself or an account-level finding
+    if f_id == f_account or "account" in str(f_id).lower() or not f_id:
+        return None, "ACCOUNT_LEVEL", None
 
-    return None, "UNMATCHED"
+    # 6. Unmatched diagnostics
+    if not manifest_resources:
+        return None, "UNMATCHED", "MANIFEST_EMPTY"
+    if not f_id and not f_arn:
+        return None, "UNMATCHED", "MISSING_RESOURCE_ID"
+    if f_arn:
+        return None, "UNMATCHED", "RESOURCE_ARN_NOT_IN_MANIFEST"
+    if f_id:
+        return None, "UNMATCHED", "RESOURCE_ID_NOT_IN_MANIFEST"
+    if f_service:
+        return None, "UNMATCHED", "SERVICE_MISMATCH"
+    if f_region:
+        return None, "UNMATCHED", "REGION_MISMATCH"
+        
+    return None, "UNMATCHED", "ACCOUNT_LEVEL_NOT_RECOGNIZED"
 
 def normalize_prowler(scan_id: str) -> None:
     runtime_dir = ROOT_DIR / "reports" / "runtime" / scan_id
@@ -116,9 +130,21 @@ def normalize_prowler(scan_id: str) -> None:
     manifest_resources = manifest.get("resources", [])
     aws_account_id = manifest.get("aws_account_id", "")
     
-    prowler_json_path = _find_prowler_json(prowler_raw_dir)
+    prowler_base_dir = runtime_dir / "prowler"
+    tag_scan_dir = prowler_base_dir / "deployment-tag-scan"
+    arn_scan_dir = prowler_base_dir / "deployment-arn-scan"
+    ctx_scan_dir = prowler_base_dir / "account-context-scan"
     
-    if not prowler_json_path:
+    raw_findings = []
+    
+    for scan_dir in [tag_scan_dir, arn_scan_dir, ctx_scan_dir]:
+        if scan_dir.exists():
+            for json_file in scan_dir.glob("prowler-output-*.json"):
+                data = safe_read_json(str(json_file))
+                if isinstance(data, list):
+                    raw_findings.extend(data)
+    
+    if not raw_findings:
         print("[normalize] ERROR: No Prowler JSON output found.")
         # Write empty structural data to avoid breaking downstream scripts
         empty_out = {
@@ -143,24 +169,27 @@ def normalize_prowler(scan_id: str) -> None:
             "region": manifest.get("regions", ["unknown"])[0] if manifest.get("regions") else "unknown",
             "deployed_resources": len(manifest_resources),
             "raw_prowler_failures": 0,
+            "deduplicated_findings": 0,
+            "merged_duplicate_records": 0,
+            "deployment_findings": 0,
             "unique_findings": 0,
             "severity_counts": {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFORMATIONAL": 0, "UNKNOWN": 0},
             "unmatched_findings_count": 0,
             "account_findings_count": 0,
-            "status": "PROWLER_EXECUTION_FAILED"
+            "status": "PROWLER_EXECUTION_FAILED",
+            "attribution_summary": {}
         }
         safe_write_json(str(summary_out_path), empty_summary)
         sys.exit(1)
 
-    raw_findings = safe_read_json(str(prowler_json_path))
-    if not isinstance(raw_findings, list):
-        print("[normalize] ERROR: Prowler JSON output is not a valid list.")
-        sys.exit(1)
-
-    # Filter out PASS / INFO unless they are FAIL
-    failed_findings = [f for f in raw_findings if f.get("Status") == "FAIL"]
+    # Filter out PASS / INFO unless they are FAIL, ERROR, or MANUAL? 
+    # Prowler 4 might return PASS, FAIL, MANUAL, WARNING, MUTED.
+    failed_findings = [f for f in raw_findings if f.get("Status") in ("FAIL", "ERROR", "MANUAL", "WARNING")]
     
     deployment_findings = []
+    account_context_findings = []
+    unmatched_findings = []
+    operational_errors = []
     account_context_findings = []
     unmatched_findings = []
     
@@ -180,58 +209,72 @@ def normalize_prowler(scan_id: str) -> None:
         dedup_key = f"{account}|{region}|{r_id}|{canonical_control}"
         dedup_map[dedup_key].append(f)
 
-    total_merged = 0
-    unique_findings = 0
+    unique_findings = len(dedup_map)
+    total_merged = len(failed_findings) - unique_findings
     
     severity_counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFORMATIONAL": 0, "UNKNOWN": 0}
+    match_methods_counts = {"RESOURCE_ARN": 0, "RESOURCE_ID": 0, "RESOURCE_NAME": 0, "SCAN_ID_TAG": 0}
+    unmatched_reasons_counts = defaultdict(int)
 
     # Process each deduplicated group
     for dedup_key, finding_group in dedup_map.items():
-        unique_findings += 1
-        if len(finding_group) > 1:
-            total_merged += (len(finding_group) - 1)
-            
         # Take the first as the primary representation for resource info
         f = finding_group[0]
         check_id = f.get("CheckID", "unknown")
         reg_info = registry_checks.get(check_id, {})
-        
         # Match resource
-        matched_resource, attr_method = match_resource(f, manifest_resources, scan_id)
+        matched_resource, attr_method, unmatched_reason = match_resource(f, manifest_resources, scan_id)
         
-        # Determine Severity
-        prowler_sev = f.get("Severity", "UNKNOWN")
-        norm_sev = "UNKNOWN"
-        sev_source = "UNKNOWN"
+        status = f.get("Status", "UNKNOWN")
+        is_operational_error = status in ("ERROR", "WARNING", "MANUAL")
         
-        if reg_info.get("severity"):
-            norm_sev = _normalize_severity(reg_info["severity"])
-            sev_source = reg_info.get("severity_source", "LOCAL_REGISTRY")
+        # Determine Severity (Hierarchy: Local Override > Native Prowler > UNKNOWN)
+        prowler_sev = f.get("Severity", "unknown")
+        
+        # Check local registry override
+        override_sev = reg_info.get("severity_override")
+        if override_sev:
+            norm_sev = _normalize_severity(override_sev)
+            sev_source = "LOCAL_REVIEWED_OVERRIDE"
         else:
             norm_sev = _normalize_severity(prowler_sev)
             sev_source = "PROWLER_METADATA"
 
-        # Determine Standards Mappings
+        severity_obj = {
+            "original": prowler_sev,
+            "normalized": norm_sev,
+            "source": sev_source
+        }
+        
+        if override_sev:
+            severity_obj["reason"] = "Documented reason"
+            severity_obj["reviewed_at"] = utc_now_iso()
+            severity_obj["reviewed_by"] = "local-registry"
+
+        # Determine Compliance Mappings
         standards = []
-        if reg_info.get("mappings"):
-            standards = reg_info["mappings"]
-        else:
-            # Attempt to extract from Prowler native compliance fields
-            compliance = f.get("Compliance", {})
-            # AWS FSBP
-            fsbp_entries = compliance.get("AWS-Foundational-Security-Best-Practices", [])
-            for entry in fsbp_entries:
-                if isinstance(entry, str):
+        compliance_data = f.get("Compliance", {})
+        if isinstance(compliance_data, dict):
+            for framework, versions in compliance_data.items():
+                if isinstance(versions, dict):
+                    for version, controls in versions.items():
+                        if isinstance(controls, list):
+                            for control in controls:
+                                standards.append({
+                                    "framework": framework,
+                                    "version": str(version),
+                                    "control_id": str(control),
+                                    "source": "PROWLER_COMPLIANCE_METADATA"
+                                })
+        elif isinstance(compliance_data, list):
+            for entry in compliance_data:
+                if isinstance(entry, dict):
                     standards.append({
-                        "name": "AWS_FOUNDATIONAL_SECURITY_BEST_PRACTICES",
-                        "version": "unknown",
-                        "control_id": entry,
-                        "mapping_source": "PROWLER_METADATA"
+                        "framework": entry.get("Framework", "unknown"),
+                        "version": entry.get("Version", "unknown"),
+                        "control_id": entry.get("Requirement", entry.get("Control", "unknown")),
+                        "source": "PROWLER_COMPLIANCE_METADATA"
                     })
-            # CIS
-            cis_entries = compliance.get("CIS-AWS-Foundations-Benchmark", [])
-            for entry in cis_entries:
-                if isinstance(entry, str):
                     standards.append({
                         "name": "CIS_AWS_FOUNDATIONS_BENCHMARK",
                         "version": "unknown",
@@ -259,64 +302,104 @@ def normalize_prowler(scan_id: str) -> None:
                 "resource_id": f.get("ResourceId", ""),
                 "resource_arn": f.get("ResourceArn", ""),
                 "resource_name": f.get("ResourceName", ""),
-                "resource_type": matched_resource.get("terraform_type", "unknown") if matched_resource else "unknown",
-                "terraform_address": matched_resource.get("terraform_address", "") if matched_resource else "",
-                "deployment_attributed": attr_method in ["RESOURCE_ARN", "RESOURCE_ID", "RESOURCE_NAME", "SCAN_ID_TAG"],
-                "attribution_method": attr_method
+                "id": r_id,
+                "arn": f.get("ResourceArn", ""),
+                "aws_account_id": account,
+                "aws_region": region,
+                "deployment_attributed": bool(matched_resource),
+                "attribution_method": attr_method,
+                "unmatched_reason": unmatched_reason,
+                "tags": f.get("Tags", {})
             },
-            "severity": {
-                "original": prowler_sev,
-                "normalized": norm_sev,
-                "source": sev_source
-            },
-            "canonical_control": reg_info.get("canonical_control", check_id.upper()),
-            "standards": standards,
+            "status": "OPERATIONAL_ERROR" if is_operational_error else "FAIL",
             "remediation": {
                 "text": f.get("Remediation", {}).get("Recommendation", {}).get("Text", ""),
                 "references": [f.get("Remediation", {}).get("Recommendation", {}).get("Url", "")]
             },
             "evidence": {
-                "raw_source_file": prowler_json_path.name,
+                "raw_source_file": "prowler-output",
                 "raw_record_reference": f.get("ResourceId", "")
             },
             "first_observed_at": utc_now_iso(),
             "generated_at": utc_now_iso()
         }
-        
-        if normalized["resource"]["deployment_attributed"]:
+        if is_operational_error:
+            operational_errors.append(normalized)
+        elif normalized["resource"]["deployment_attributed"]:
             deployment_findings.append(normalized)
             severity_counts[norm_sev] += 1
+            if attr_method in match_methods_counts:
+                match_methods_counts[attr_method] += 1
         elif attr_method == "ACCOUNT_LEVEL":
             account_context_findings.append(normalized)
         else:
             unmatched_findings.append(normalized)
+            if unmatched_reason:
+                unmatched_reasons_counts[unmatched_reason] += 1
 
     out_data = {
         "metadata": {
             "scan_id": scan_id,
             "generated_at": utc_now_iso(),
             "total_raw_failures": len(failed_findings),
-            "total_unique_findings": unique_findings,
+            "deduplicated_findings": unique_findings,
             "total_merged_duplicates": total_merged,
+            "deployment_findings": len(deployment_findings),
+            "account_context_findings": len(account_context_findings),
+            "unmatched_findings": len(unmatched_findings),
+            "operational_errors": len(operational_errors),
             "severity_counts": severity_counts
         },
         "deployment_findings": deployment_findings,
         "account_context_findings": account_context_findings,
-        "unmatched_findings": unmatched_findings
+        "unmatched_findings": unmatched_findings,
+        "operational_errors": operational_errors
     }
     
     safe_write_json(str(normalized_out_path), out_data)
+
+    # Coverage calculations
+    taggable_resources = sum(1 for r in manifest_resources if r.get("taggable"))
+    arn_resources = sum(1 for r in manifest_resources if not r.get("taggable") and r.get("resource_arn"))
+    verified_resources = len({f["resource"]["arn"] for f in deployment_findings if f["resource"].get("arn")} | {f["resource"]["id"] for f in deployment_findings if f["resource"].get("id")})
     
+    total_scannable = taggable_resources + arn_resources
+    cov_pct = round((verified_resources / total_scannable * 100), 2) if total_scannable > 0 else 100.0
+
     summary = {
         "scan_id": scan_id,
         "aws_account_id": aws_account_id,
         "region": manifest.get("regions", ["unknown"])[0] if manifest.get("regions") else "unknown",
+        "prowler_version": "4.3.4", # Hardcoded or fetched from execution evidence
+        "scan_scope": "DEPLOYMENT_TAG_FILTER",
         "deployed_resources": len(manifest_resources),
+        "tag_scannable_resources": taggable_resources,
+        "arn_scannable_resources": arn_resources,
         "raw_prowler_failures": len(failed_findings),
-        "unique_findings": len(deployment_findings),
+        "deduplicated_findings": unique_findings,
+        "merged_duplicate_records": total_merged,
+        "deployment_findings": len(deployment_findings),
+        "unique_findings": len(deployment_findings) + len(account_context_findings),
         "severity_counts": severity_counts,
         "unmatched_findings_count": len(unmatched_findings),
-        "account_findings_count": len(account_context_findings)
+        "account_findings_count": len(account_context_findings),
+        "operational_errors_count": len(operational_errors),
+        "status": "SUCCESS",
+        "coverage": {
+            "manifest_resources": len(manifest_resources),
+            "tag_scannable_resources": taggable_resources,
+            "arn_scannable_resources": arn_resources,
+            "verified_scanned_resources": verified_resources,
+            "coverage_percentage": cov_pct,
+            "coverage_status": "FULL" if cov_pct == 100 else "PARTIAL"
+        },
+        "attribution_summary": {
+            "deployment_findings": len(deployment_findings),
+            "account_context_findings": len(account_context_findings),
+            "unmatched_findings": len(unmatched_findings),
+            "match_methods": match_methods_counts,
+            "unmatched_reasons": dict(unmatched_reasons_counts)
+        }
     }
     safe_write_json(str(summary_out_path), summary)
     

@@ -1042,6 +1042,37 @@ jobs:
           python scripts/deployment/build_state_resource_inventory.py \
             "$SCAN_ID" \
             "reports/deployment/$SCAN_ID/deployed-state.json"
+          
+      - name: "Stage 30.5: Verify deployment tags"
+        if: steps.tf_apply.outputs.apply_exit_code == '0'
+        run: |
+          python scripts/deployment/verify_deployment_tags.py \
+            "$SCAN_ID" \
+            "reports/deployment/$SCAN_ID/terraform-state-resource-inventory.json"
+          
+          echo "Diagnostic: Inventory summary"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import os
+
+          scan_id = os.environ["SCAN_ID"]
+          path = Path(f"reports/deployment/{scan_id}/terraform-state-resource-inventory.json")
+          if path.exists():
+              data = json.loads(path.read_text())
+              print("Inventory summary:", data.get("summary"))
+              print("Resource count:", len(data.get("resources", [])))
+              for resource in data.get("resources", []):
+                  print(
+                      resource.get("terraform_address"),
+                      resource.get("resource_id"),
+                      resource.get("resource_arn"),
+                      resource.get("aws_service"),
+                      resource.get("aws_region"),
+                  )
+          else:
+              print("Diagnostic: Inventory file not found.")
+          PY
 
       # ================================================================
       # STAGE 31: DISCOVER TAGGED AWS RESOURCES
@@ -1148,9 +1179,18 @@ jobs:
       - name: "Stage 38: Install and Verify Prowler"
         if: steps.tf_apply.outputs.apply_exit_code == '0'
         run: |
-          pip install prowler==3.12.1
+          pip install "prowler==4.3.4"
           echo "Verifying Prowler installation..."
           prowler -v
+          
+          echo "Verifying boto versions..."
+          python - <<'PY'
+          import boto3
+          import botocore
+          print("boto3:", boto3.__version__)
+          print("botocore:", botocore.__version__)
+          PY
+          
           echo "Verifying Prowler AWS module..."
           prowler aws --help > /dev/null
           echo "Prowler is installed and functioning correctly."

@@ -41,6 +41,10 @@ def build_manifest(scan_id: str) -> None:
         sys.exit(1)
 
     state_resources = inventory.get("resources", [])
+    if not state_resources:
+        print("[build_deployment_manifest] RUNTIME_ATTRIBUTION_UNAVAILABLE:")
+        print("[build_deployment_manifest] Terraform deployment inventory contains zero AWS resources.")
+        sys.exit(1)
     
     # Extract unique regions from the deployed resources
     regions = set()

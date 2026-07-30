@@ -99,10 +99,13 @@ The framework deploys all Terraform templates to an **isolated AWS sandbox accou
 
 ### 3.3 Resource Targeting
 
-After deployment, Prowler is configured to target resources tagged with the current `upload_id`. This ensures that:
-- Runtime findings are attributed to the correct Terraform upload
-- Multiple concurrent pipeline runs do not interfere with each other
-- Evidence packages contain only findings relevant to their specific upload
+After deployment, Prowler is configured to target resources explicitly tied to the current pipeline deployment. This is achieved through:
+
+1. **Tag Filtering**: Prowler scans only resources tagged with `scan-id` and `managed-by`.
+2. **ARN Fallback**: For resources that do not support tags, Prowler may optionally be scoped via specific ARNs.
+3. **Account Context**: An optional account-wide scan can be run to detect organization or account-level issues (e.g. root MFA).
+
+**Important**: Tag filtering alone is *not* sufficient forensic proof. The framework strictly matches every Prowler finding against the Terraform state deployment manifest. If Prowler reports a finding for a resource that is *not* in the Terraform state manifest, it is classified as an **Unmatched Finding**. Unmatched findings do not automatically mean false positives; they simply mean the issue resides on infrastructure outside the current deployment scope.
 
 ---
 
@@ -141,14 +144,20 @@ When both agree, confidence in the finding is maximised. When they disagree, dri
 | RDS | Encryption, public accessibility, backup retention |
 | Lambda | Function URL auth, dead letter queue, encryption |
 
-### 4.4 Prowler Output Integration
+### 4.4 Prowler Native Metadata and Outputs
 
-Prowler output is processed by `normalize_prowler.py`:
-1. Raw Prowler JSON ingested
-2. Each finding normalized to the framework's standard finding format
-3. `upload_id` attached to every finding
-4. Findings saved to `reports/runtime/normalized-runtime-findings.json`
-5. Runtime findings fed into the final risk scoring calculation
+Prowler output is processed by `normalize_runtime_findings.py`:
+1. Prowler natively scans the live AWS environment (authenticated via GitHub OIDC temporary credentials).
+2. The framework explicitly extracts **native Prowler severity** (using it by default).
+3. The framework natively parses **Prowler compliance and benchmark mappings** (e.g., CIS, AWS Foundational Security Best Practices).
+4. The local framework registry is **supplementary**, used only for canonical control mapping, cross-tool correlation, or explicit local severity overrides.
+5. Findings are classified as:
+   - `DEPLOYMENT_FINDING`: Matched to the authoritative Terraform deployment manifest.
+   - `ACCOUNT_CONTEXT_FINDING`: Identified as an account-level misconfiguration.
+   - `UNMATCHED_FINDING`: Found by Prowler but not in the deployment manifest.
+   - `OPERATIONAL_ERROR`: Scanner crashes, AccessDenied, or unsupported APIs (these do *not* count as security findings).
+6. **Scan coverage** is calculated since tag-filtered scans may be partial if resources do not support tags.
+7. Findings are saved to `reports/runtime/<SCAN_ID>/normalized/normalized-runtime-findings.json`.
 
 ---
 
