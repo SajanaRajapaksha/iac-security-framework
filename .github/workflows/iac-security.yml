@@ -1148,7 +1148,7 @@ jobs:
       - name: "Stage 38: Install and Verify Prowler"
         if: steps.tf_apply.outputs.apply_exit_code == '0'
         run: |
-          pip install prowler==3.12.2
+          pip install prowler==3.12.1
           echo "Verifying Prowler installation..."
           prowler -v
           echo "Verifying Prowler AWS module..."
