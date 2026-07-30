@@ -75,7 +75,7 @@ def run_prowler(scan_id: str) -> None:
         "prowler",
         "aws",
         "-f", aws_region,
-        "-M", "json",
+        "-M", "csv", "json-ocsf",
         "-O", str(prowler_raw_dir)
     ]
 
