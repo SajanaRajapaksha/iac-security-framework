@@ -3,7 +3,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 
-from scripts.runtime.normalize_runtime_findings import _normalize_severity, parse_ocsf
+from scripts.runtime.normalize_runtime_findings import _normalize_severity, parse_ocsf, get_check_status, normalize_prowler
 from scripts.runtime.run_prowler import run_prowler
 
 def test_normalize_severity():
@@ -35,6 +35,67 @@ def test_parse_ocsf_ndjson(tmp_path):
     assert len(parsed) == 2
     assert parsed[0]["uid"] == "1"
     assert parsed[1]["uid"] == "2"
+
+def test_get_check_status():
+    assert get_check_status({"status_code": "FAIL", "status": "New"}) == "FAIL"
+    assert get_check_status({"status_code": "PASS", "status": "New"}) == "PASS"
+
+def test_normalize_prowler_extraction(tmp_path, monkeypatch):
+    monkeypatch.setattr("scripts.runtime.normalize_runtime_findings.ROOT_DIR", tmp_path)
+    
+    scan_id = "SCAN-TEST"
+    runtime_dir = tmp_path / "reports" / "runtime" / scan_id
+    raw_dir = runtime_dir / "prowler" / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Write mock execution JSON
+    exec_path = runtime_dir / "prowler" / "prowler-execution.json"
+    exec_path.write_text('{}')
+    
+    # Write mock OCSF
+    ocsf_data = [
+        {
+            "status_code": "FAIL",
+            "status": "New",
+            "metadata": {"event_code": "test_check_1"},
+            "unmapped": {"compliance": {"CIS": {"1.0": ["1.1"]}}},
+            "resources": [{"uid": "arn:aws:s3:::test-bucket", "group": {"name": "s3"}}],
+            "severity": "High"
+        },
+        {
+            "status_code": "PASS",
+            "status": "New",
+            "metadata": {"event_code": "test_check_2"}
+        }
+    ]
+    (raw_dir / "test.ocsf.json").write_text(json.dumps(ocsf_data))
+    
+    # Also write a mock registry to avoid error
+    registry_path = tmp_path / "mappings" / "runtime" / "prowler-security-hub-standards.json"
+    registry_path.parent.mkdir(parents=True, exist_ok=True)
+    registry_path.write_text('{"checks": {}}')
+    
+    normalize_prowler(scan_id)
+    
+    norm_file = runtime_dir / "normalized" / "runtime-findings.json"
+    assert norm_file.exists()
+    
+    data = json.loads(norm_file.read_text())
+    
+    # Ensure PASS was excluded, and FAIL was included
+    assert data["summary"]["raw_findings"] == 1
+    
+    finding = data["findings"][0]
+    
+    # Check extraction logic
+    assert finding["control_id"] == "TEST_CHECK_1"
+    assert finding["resource"]["arn"] == "arn:aws:s3:::test-bucket"
+    assert finding["resource"]["id"] == "test-bucket"
+    
+    # Check compliance
+    assert len(finding["compliance"]) == 1
+    assert finding["compliance"][0]["framework"] == "CIS"
+    assert finding["compliance"][0]["control_id"] == "1.1"
 
 @patch("scripts.runtime.run_prowler.boto3")
 @patch("scripts.runtime.run_prowler.subprocess")

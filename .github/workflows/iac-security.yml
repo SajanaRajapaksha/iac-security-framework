@@ -1183,6 +1183,52 @@ jobs:
         if: steps.tf_apply.outputs.apply_exit_code == '0'
         run: python scripts/runtime/run_prowler.py "$SCAN_ID"
 
+      - name: "Stage 39.5: Print raw Prowler findings"
+        if: steps.tf_apply.outputs.apply_exit_code == '0'
+        run: |
+          set -euo pipefail
+
+          OCSF_FILE="$(find \
+            "reports/runtime/${SCAN_ID}/prowler/raw" \
+            -type f \
+            -name "*.ocsf.json" \
+            | head -n 1)"
+
+          if [[ -z "$OCSF_FILE" ]]; then
+            echo "::error::No Prowler JSON-OCSF output found"
+            exit 1
+          fi
+
+          echo "Prowler OCSF file: $OCSF_FILE"
+          echo "Total OCSF records: $(jq 'length' "$OCSF_FILE")"
+
+          echo "Status-code counts:"
+          jq -r '.[].status_code // "MISSING"' "$OCSF_FILE" \
+            | sort \
+            | uniq -c
+
+          echo "Failed Prowler findings:"
+          jq -r '
+            .[]
+            | select((.status_code // "") == "FAIL")
+            | [
+                (.severity // "UNKNOWN"),
+                (.metadata.event_code
+                  // .finding_info.analytic.uid
+                  // "UNKNOWN_CHECK"),
+                (.finding_info.title // "Untitled finding"),
+                (.resources[0].group.name
+                  // .finding_info.analytic.category
+                  // "unknown-service"),
+                (.resources[0].uid // "unknown-resource"),
+                (.cloud.region
+                  // .resources[0].region
+                  // "unknown-region"),
+                (.message // "")
+              ]
+            | @tsv
+          ' "$OCSF_FILE"
+
       - name: "Stage 40: Normalize runtime findings"
         if: steps.tf_apply.outputs.apply_exit_code == '0'
         run: python scripts/runtime/normalize_runtime_findings.py "$SCAN_ID"

@@ -32,6 +32,14 @@ def _normalize_severity(orig: str) -> str:
         return "INFORMATIONAL"
     return "UNKNOWN"
 
+def get_check_status(finding: dict) -> str:
+    return str(
+        finding.get("status_code")
+        or finding.get("check_status")
+        or finding.get("Status")
+        or ""
+    ).strip().upper()
+
 def _find_prowler_ocsf(raw_dir: Path) -> Path | None:
     files = list(raw_dir.glob("*.ocsf.json")) + list(raw_dir.glob("*.json"))
     if not files:
@@ -87,12 +95,7 @@ def normalize_prowler(scan_id: str) -> None:
     # Identify failures
     failed_findings = []
     for f in raw_findings:
-        status = str(f.get("status", f.get("Status", ""))).upper()
-        finding_info = f.get("finding_info", {})
-        if not status and finding_info:
-            status = str(finding_info.get("status", "")).upper()
-        
-        if status in ("FAIL", "FAILED", "NON-COMPLIANT"):
+        if get_check_status(f) == "FAIL":
             failed_findings.append(f)
 
     # Deduplication map
@@ -100,13 +103,22 @@ def normalize_prowler(scan_id: str) -> None:
     
     for f in failed_findings:
         finding_info = f.get("finding_info", {})
-        check_id = f.get("type_uid") or finding_info.get("uid") or f.get("CheckID") or "unknown"
+        metadata = f.get("metadata", {})
+        
+        check_id = metadata.get("event_code") or finding_info.get("analytic", {}).get("uid") or f.get("type_uid") or f.get("CheckID") or "unknown"
         
         resources = f.get("resources", [])
         if not resources:
             resources = [{"uid": f.get("ResourceId", "unknown"), "cloud_partition": f.get("ResourceArn", ""), "region": f.get("Region", "unknown")}]
             
-        r_id = resources[0].get("uid", "unknown")
+        r_uid = resources[0].get("uid", "unknown")
+        if str(r_uid).startswith("arn:"):
+            r_arn = r_uid
+            r_id = r_uid.split(":")[-1] if ":" in r_uid else r_uid
+        else:
+            r_arn = resources[0].get("cloud_partition") or f.get("ResourceArn", "")
+            r_id = r_uid
+
         account = f.get("cloud", {}).get("account", {}).get("uid", f.get("AccountId", "unknown"))
         region = resources[0].get("region", f.get("Region", "unknown"))
         
@@ -118,21 +130,31 @@ def normalize_prowler(scan_id: str) -> None:
     
     severity_counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFORMATIONAL": 0, "UNKNOWN": 0}
     deployment_findings = []
-    
+
     for dedup_key, finding_group in dedup_map.items():
+        # Use first for core metadata
         f = finding_group[0]
         finding_info = f.get("finding_info", {})
-        check_id = f.get("type_uid") or finding_info.get("uid") or f.get("CheckID") or "unknown"
+        metadata = f.get("metadata", {})
+        
+        check_id = metadata.get("event_code") or finding_info.get("analytic", {}).get("uid") or f.get("type_uid") or f.get("CheckID") or "unknown"
         reg_info = registry_checks.get(check_id, {})
         canonical_control = reg_info.get("canonical_control", check_id.upper())
         
         resources = f.get("resources", [])
         if not resources:
-            resources = [{"uid": f.get("ResourceId", "unknown"), "cloud_partition": f.get("ResourceArn", ""), "region": f.get("Region", "unknown"), "name": f.get("ResourceName", "")}]
+            resources = [{"uid": f.get("ResourceId", "unknown"), "cloud_partition": f.get("ResourceArn", ""), "region": f.get("Region", "unknown"), "name": f.get("ResourceName", ""), "group": {"name": "unknown"}}]
             
-        r_id = resources[0].get("uid", "unknown")
-        r_arn = resources[0].get("cloud_partition") or f.get("ResourceArn", "")
+        r_uid = resources[0].get("uid", "unknown")
+        if str(r_uid).startswith("arn:"):
+            r_arn = r_uid
+            r_id = r_uid.split(":")[-1] if ":" in r_uid else r_uid
+        else:
+            r_arn = resources[0].get("cloud_partition") or f.get("ResourceArn", "")
+            r_id = r_uid
+            
         r_name = resources[0].get("name") or f.get("ResourceName", "")
+        service = resources[0].get("group", {}).get("name") or finding_info.get("analytic", {}).get("category") or "unknown"
         account = f.get("cloud", {}).get("account", {}).get("uid", f.get("AccountId", "unknown"))
         region = resources[0].get("region", f.get("Region", "unknown"))
         
@@ -151,7 +173,7 @@ def normalize_prowler(scan_id: str) -> None:
 
         # Compliance
         standards = []
-        compliance_data = f.get("compliance", f.get("Compliance", {}))
+        compliance_data = f.get("unmapped", {}).get("compliance") or f.get("compliance") or f.get("Compliance", {})
         if isinstance(compliance_data, dict):
             for framework, versions in compliance_data.items():
                 if isinstance(versions, dict):
@@ -257,7 +279,7 @@ def normalize_prowler(scan_id: str) -> None:
                 "check_id": f["control_id"],
                 "title": f["title"],
                 "severity": f["severity"]["normalized"],
-                "service": f.get("resource", {}).get("arn", "").split(":")[2] if ":" in f.get("resource", {}).get("arn", "") else "unknown",
+                "service": service,
                 "resource_id": f["resource"]["id"],
                 "resource_arn": f["resource"]["arn"],
                 "region": f["resource"]["aws_region"]
