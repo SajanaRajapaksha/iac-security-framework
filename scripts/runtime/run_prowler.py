@@ -89,9 +89,14 @@ def run_prowler(scan_id: str) -> None:
     stdout_path = prowler_raw_dir / "stdout.log"
     stderr_path = prowler_raw_dir / "stderr.log"
 
+    # Clean the environment for Prowler to prevent it from manually parsing OIDC variables and crashing
+    prowler_env = os.environ.copy()
+    prowler_env.pop("AWS_ROLE_ARN", None)
+    prowler_env.pop("AWS_WEB_IDENTITY_TOKEN_FILE", None)
+
     try:
         with open(stdout_path, "w") as out, open(stderr_path, "w") as err:
-            process = subprocess.run(command, stdout=out, stderr=err)
+            process = subprocess.run(command, stdout=out, stderr=err, env=prowler_env)
             return_code = process.returncode
     except FileNotFoundError:
         print("[run_prowler] ERROR: Prowler executable not found. Ensure it is installed in the path.")
