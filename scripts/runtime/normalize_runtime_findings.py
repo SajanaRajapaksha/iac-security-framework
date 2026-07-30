@@ -45,7 +45,7 @@ def _find_prowler_json(raw_dir: Path) -> Path | None:
     # Return the one with the latest modification time
     return sorted(files, key=lambda f: f.stat().st_mtime)[-1]
 
-def match_resource(finding: dict, manifest_resources: list) -> tuple[dict | None, str]:
+def match_resource(finding: dict, manifest_resources: list, scan_id: str) -> tuple[dict | None, str]:
     """Match a Prowler finding to a resource in the deployment manifest.
     Returns (matched_resource_dict, attribution_method).
     """
@@ -78,11 +78,20 @@ def match_resource(finding: dict, manifest_resources: list) -> tuple[dict | None
                  
     # 4. Tags
     if isinstance(f_tags, dict):
-        scan_id_tag = f_tags.get("ResearchScanId")
-        if scan_id_tag:
+        scan_id_tag = (
+            f_tags.get("scan-id")
+            or f_tags.get("ResearchScanId")
+            or f_tags.get("research-scan-id")
+        )
+        if scan_id_tag and scan_id_tag == scan_id:
             for r in manifest_resources:
-                 if r.get("tags", {}).get("ResearchScanId") == scan_id_tag:
+                 r_tags = r.get("tags", {})
+                 r_scan_id_tag = r_tags.get("scan-id") or r_tags.get("ResearchScanId") or r_tags.get("research-scan-id")
+                 if r_scan_id_tag == scan_id_tag:
                       return r, "SCAN_ID_TAG"
+            
+            # Attributed by tag even if resource ID wasn't in manifest
+            return None, "SCAN_ID_TAG"
 
     # 5. Account-level
     # If the resource is the account itself
@@ -160,7 +169,7 @@ def normalize_prowler(scan_id: str) -> None:
         reg_info = registry_checks.get(check_id, {})
         
         # Match resource
-        matched_resource, attr_method = match_resource(f, manifest_resources)
+        matched_resource, attr_method = match_resource(f, manifest_resources, scan_id)
         
         # Determine Severity
         prowler_sev = f.get("Severity", "UNKNOWN")
