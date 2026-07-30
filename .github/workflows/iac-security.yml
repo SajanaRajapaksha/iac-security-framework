@@ -1237,6 +1237,10 @@ jobs:
         if: always() && steps.tf_apply.outputs.apply_exit_code == '0'
         run: python scripts/runtime/list_runtime_findings.py "$SCAN_ID"
 
+      - name: "Stage 41.5: Calculate post-deployment risk score"
+        if: always() && steps.tf_apply.outputs.apply_exit_code == '0'
+        run: python scripts/risk/calculate_postdeployment_risk_score.py "$SCAN_ID"
+
       - name: "Stage 42: Hash runtime evidence"
         if: always() && steps.tf_apply.outputs.apply_exit_code == '0'
         run: python scripts/runtime/generate_runtime_evidence.py "$SCAN_ID"
@@ -1256,3 +1260,4 @@ jobs:
             reports/runtime/${{ env.SCAN_ID }}/normalized/runtime-findings.json
             reports/runtime/${{ env.SCAN_ID }}/normalized/runtime-findings-summary.json
             reports/runtime/${{ env.SCAN_ID }}/normalized/runtime-operational-error.json
+            reports/runtime/${{ env.SCAN_ID }}/risk/
