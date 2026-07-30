@@ -1164,25 +1164,20 @@ jobs:
           
           python -m pip check
 
-      - name: "Stage 38.5: Verify Prowler CLI compatibility"
+      - name: "Verify Prowler installation"
         if: steps.tf_apply.outputs.apply_exit_code == '0'
         run: |
           set -euo pipefail
-          prowler aws --help > reports/runtime/$SCAN_ID/prowler-aws-help.txt || true
-          
-          for option in \
-            "--resource-tags" \
-            "--filter-region" \
-            "--output-modes" \
-            "--output-directory" \
-            "--no-banner"
-          do
-            if ! grep -q -- "$option" reports/runtime/$SCAN_ID/prowler-aws-help.txt; then
-              echo "::error::Installed Prowler does not support $option"
-              exit 1
-            fi
-          done
-          echo "Required Prowler CLI options are supported."
+
+          PROWLER_VERSION="$(prowler -v 2>&1)"
+          echo "Installed: $PROWLER_VERSION"
+
+          if [[ "$PROWLER_VERSION" != *"5.28.1"* ]]; then
+            echo "::error::Expected Prowler 5.28.1 but found: $PROWLER_VERSION"
+            exit 1
+          fi
+
+          python -m pip check
 
       - name: "Stage 39: Run Prowler scan"
         if: steps.tf_apply.outputs.apply_exit_code == '0'
