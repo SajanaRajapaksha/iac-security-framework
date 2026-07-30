@@ -62,6 +62,39 @@ def extract_post_deployment_findings(runtime_data: dict) -> list[dict]:
         })
     return sort_findings_by_severity(results)
 
+def extract_numeric_score(data: dict, stage: str):
+    if not data: return None
+    score_obj = data.get("score")
+    if isinstance(score_obj, dict):
+        if stage == "PRE_DEPLOYMENT" and "pre_deployment_risk_score" in score_obj:
+            return score_obj["pre_deployment_risk_score"]
+        if stage == "POST_DEPLOYMENT" and "post_deployment_risk_score" in score_obj:
+            return score_obj["post_deployment_risk_score"]
+        if "score" in score_obj:
+            return score_obj["score"]
+    if "score" in data and isinstance(data["score"], (int, float)):
+        return int(data["score"])
+    return None
+
+def extract_risk_band(data: dict):
+    if not data: return None
+    score_obj = data.get("score")
+    if isinstance(score_obj, dict) and "risk_band" in score_obj:
+        return score_obj["risk_band"]
+    return data.get("risk_band")
+
+def extract_decision_or_action(data: dict, stage: str):
+    if not data: return None
+    score_obj = data.get("score")
+    if isinstance(score_obj, dict):
+        if stage == "PRE_DEPLOYMENT" and "suggested_decision" in score_obj:
+            return score_obj["suggested_decision"]
+        if stage == "POST_DEPLOYMENT" and "suggested_action" in score_obj:
+            return score_obj["suggested_action"]
+    if stage == "PRE_DEPLOYMENT":
+        return data.get("suggested_decision")
+    return data.get("suggested_action")
+
 def determine_recommendation(
     pre_score: dict, 
     post_score: dict, 
@@ -69,18 +102,18 @@ def determine_recommendation(
     exec_status: str
 ) -> tuple[str, str, str]:
     
-    if not pre_score or not post_score or not post_score.get("score") or post_score.get("status") != "CALCULATED":
+    if not pre_score or not post_score or extract_numeric_score(post_score, "POST_DEPLOYMENT") is None or post_score.get("status") != "CALCULATED":
         return "REVIEW_INCOMPLETE", "Missing or invalid score/runtime evidence", "1. Missing or invalid score/runtime evidence"
         
-    post_band = post_score.get("score", {}).get("risk_band")
+    post_band = extract_risk_band(post_score)
     if post_band == "CRITICAL_RISK":
         return "CRITICAL_REMEDIATION", "Post-deployment score is CRITICAL_RISK", "2. Post-deployment score is CRITICAL_RISK"
         
     if any(f.get("severity") == "CRITICAL" for f in post_findings):
         return "URGENT_REVIEW", "Any post-deployment CRITICAL finding", "3. Any post-deployment CRITICAL finding"
         
-    pre_num = pre_score.get("score")
-    post_num = post_score.get("score", {}).get("post_deployment_risk_score")
+    pre_num = extract_numeric_score(pre_score, "PRE_DEPLOYMENT")
+    post_num = extract_numeric_score(post_score, "POST_DEPLOYMENT")
     
     if pre_num is not None and post_num is not None and post_num < pre_num:
         return "RUNTIME_RISK_INCREASED", "Post-deployment score is lower than pre-deployment score", "4. Post-deployment score is lower than pre-deployment score"
@@ -126,8 +159,8 @@ def main():
     band_move = "NOT_AVAILABLE"
     delta = 0
     abs_delta = 0
-    pre_num = pre_score.get("score") if pre_score else None
-    post_num = post_score.get("score", {}).get("post_deployment_risk_score") if post_score else None
+    pre_num = extract_numeric_score(pre_score, "PRE_DEPLOYMENT")
+    post_num = extract_numeric_score(post_score, "POST_DEPLOYMENT")
 
     if pre_num is not None and post_num is not None:
         delta = post_num - pre_num
@@ -139,8 +172,8 @@ def main():
         else:
             comp_res = "SCORES_EQUAL"
             
-        pre_band_idx = get_risk_band_index(pre_score.get("risk_band", ""))
-        post_band_idx = get_risk_band_index(post_score.get("score", {}).get("risk_band", ""))
+        pre_band_idx = get_risk_band_index(extract_risk_band(pre_score) or "")
+        post_band_idx = get_risk_band_index(extract_risk_band(post_score) or "")
         
         if pre_band_idx < 99 and post_band_idx < 99:
             # lower index = better band
@@ -172,11 +205,11 @@ def main():
         "status": "COMPLETE" if rec_decision != "REVIEW_INCOMPLETE" else "INCOMPLETE",
         "score_comparison": {
             "pre_deployment_score": pre_num,
-            "pre_deployment_risk_band": pre_score.get("risk_band") if pre_score else None,
-            "pre_deployment_decision": pre_score.get("suggested_decision") if pre_score else None,
+            "pre_deployment_risk_band": extract_risk_band(pre_score),
+            "pre_deployment_decision": extract_decision_or_action(pre_score, "PRE_DEPLOYMENT"),
             "post_deployment_score": post_num,
-            "post_deployment_risk_band": post_score.get("score", {}).get("risk_band") if post_score else None,
-            "post_deployment_action": post_score.get("score", {}).get("suggested_action") if post_score else None,
+            "post_deployment_risk_band": extract_risk_band(post_score),
+            "post_deployment_action": extract_decision_or_action(post_score, "POST_DEPLOYMENT"),
             "score_delta_points": delta,
             "absolute_score_delta_points": abs_delta,
             "comparison_result": comp_res,

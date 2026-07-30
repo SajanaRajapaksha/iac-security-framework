@@ -4,7 +4,10 @@ import hashlib
 from unittest.mock import patch, MagicMock
 
 from scripts.review.review_utils import get_risk_band_index, sort_findings_by_severity
-from scripts.review.generate_security_review import determine_recommendation, extract_pre_deployment_findings, extract_post_deployment_findings
+from scripts.review.generate_security_review import (
+    determine_recommendation, extract_pre_deployment_findings, extract_post_deployment_findings,
+    extract_numeric_score, extract_risk_band, extract_decision_or_action
+)
 from scripts.review.remediation_cache import generate_cache_key
 from scripts.review.generate_ai_remediation import build_remediation_groups, run_ai_batch
 
@@ -12,6 +15,29 @@ def test_score_delta_positive():
     # positive delta = RUNTIME_POSTURE_BETTER
     # This is handled directly in generate_security_review.py logic (delta = post - pre).
     assert 600 - 500 == 100
+
+def test_extract_helpers_flat():
+    flat_pre = {"score": 554, "risk_band": "MODERATE_RISK", "suggested_decision": "REVIEW"}
+    assert extract_numeric_score(flat_pre, "PRE_DEPLOYMENT") == 554
+    assert extract_risk_band(flat_pre) == "MODERATE_RISK"
+    assert extract_decision_or_action(flat_pre, "PRE_DEPLOYMENT") == "REVIEW"
+
+def test_extract_helpers_nested():
+    nested_post = {
+        "score": {
+            "post_deployment_risk_score": 612,
+            "risk_band": "MODERATE_RISK",
+            "suggested_action": "REMEDIATION_REQUIRED"
+        }
+    }
+    assert extract_numeric_score(nested_post, "POST_DEPLOYMENT") == 612
+    assert extract_risk_band(nested_post) == "MODERATE_RISK"
+    assert extract_decision_or_action(nested_post, "POST_DEPLOYMENT") == "REMEDIATION_REQUIRED"
+
+def test_extract_helpers_missing():
+    assert extract_numeric_score({}, "PRE_DEPLOYMENT") is None
+    assert extract_risk_band({"score": {}}) is None
+    assert extract_decision_or_action({"score": 500}, "POST_DEPLOYMENT") is None
 
 def test_score_delta_negative():
     assert 500 - 600 == -100
