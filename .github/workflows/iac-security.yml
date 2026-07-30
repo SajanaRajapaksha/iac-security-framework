@@ -1156,15 +1156,15 @@ jobs:
         run: python scripts/runtime/normalize_runtime_findings.py "$SCAN_ID"
 
       - name: "Stage 40: List runtime findings"
-        if: steps.tf_apply.outputs.apply_exit_code == '0'
+        if: always() && steps.tf_apply.outputs.apply_exit_code == '0'
         run: python scripts/runtime/list_runtime_findings.py "$SCAN_ID"
 
       - name: "Stage 41: Hash runtime evidence"
-        if: steps.tf_apply.outputs.apply_exit_code == '0'
+        if: always() && steps.tf_apply.outputs.apply_exit_code == '0'
         run: python scripts/runtime/generate_runtime_evidence.py "$SCAN_ID"
 
       - name: "Stage 42: Upload runtime evidence artifacts"
-        if: steps.tf_apply.outputs.apply_exit_code == '0'
+        if: always() && steps.tf_apply.outputs.apply_exit_code == '0'
         uses: actions/upload-artifact@v4
         with:
           name: terraform-runtime-${{ env.SCAN_ID }}

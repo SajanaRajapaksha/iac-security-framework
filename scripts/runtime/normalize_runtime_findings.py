@@ -122,6 +122,36 @@ def normalize_prowler(scan_id: str) -> None:
     prowler_json_path = _find_prowler_json(prowler_raw_dir)
     if not prowler_json_path:
         print("[normalize] ERROR: No Prowler JSON output found.")
+        # Write empty structural data to avoid breaking downstream scripts
+        empty_out = {
+            "metadata": {
+                "scan_id": scan_id,
+                "generated_at": utc_now_iso(),
+                "total_raw_failures": 0,
+                "total_unique_findings": 0,
+                "total_merged_duplicates": 0,
+                "severity_counts": {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFORMATIONAL": 0, "UNKNOWN": 0},
+                "status": "PROWLER_EXECUTION_FAILED"
+            },
+            "deployment_findings": [],
+            "account_context_findings": [],
+            "unmatched_findings": []
+        }
+        safe_write_json(str(normalized_out_path), empty_out)
+        
+        empty_summary = {
+            "scan_id": scan_id,
+            "aws_account_id": aws_account_id,
+            "region": manifest.get("regions", ["unknown"])[0] if manifest.get("regions") else "unknown",
+            "deployed_resources": len(manifest_resources),
+            "raw_prowler_failures": 0,
+            "unique_findings": 0,
+            "severity_counts": {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFORMATIONAL": 0, "UNKNOWN": 0},
+            "unmatched_findings_count": 0,
+            "account_findings_count": 0,
+            "status": "PROWLER_EXECUTION_FAILED"
+        }
+        safe_write_json(str(summary_out_path), empty_summary)
         sys.exit(1)
 
     raw_findings = safe_read_json(str(prowler_json_path))

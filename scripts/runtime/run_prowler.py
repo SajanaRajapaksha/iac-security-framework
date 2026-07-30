@@ -74,10 +74,9 @@ def run_prowler(scan_id: str) -> None:
     command = [
         "prowler",
         "aws",
-        "--region", aws_region,
+        "--filter-region", aws_region,
         "--output-formats", "json",
-        "--output-directory", str(prowler_raw_dir),
-        "--no-banner",
+        "--output-directory", str(prowler_raw_dir)
     ]
 
     prowler_version = get_prowler_version()
@@ -110,7 +109,9 @@ def run_prowler(scan_id: str) -> None:
         status = "SUCCESS_WITH_FINDINGS"
     else:
         status = "EXECUTION_ERROR"
-        print(f"[run_prowler] WARNING: Prowler returned non-zero code {return_code}. Check stderr.log for details.")
+        print(f"[run_prowler] WARNING: Prowler returned non-zero code {return_code}.")
+        if stderr_path.exists():
+            print(f"[run_prowler] Prowler stderr output:\n{stderr_path.read_text()}")
 
     evidence = {
         "schema_version": "1.0",
