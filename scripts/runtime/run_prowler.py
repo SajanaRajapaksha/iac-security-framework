@@ -67,16 +67,16 @@ def run_prowler(scan_id: str) -> None:
         print(f"[run_prowler] ERROR: Account mismatch! Manifest says {expected_account_id}, but caller is {actual_account_id}")
         sys.exit(1)
 
-    aws_region = os.environ.get("AWS_REGION", "eu-west-1") # Fallback to eu-west-1 if not set
+    aws_region = os.environ.get("AWS_REGION", "us-east-1") # Fallback to eu-west-1 if not set
 
     # Command construction
     # We use json for finding output to easily access compliance mappings
     command = [
         "prowler",
         "aws",
-        "--filter-region", aws_region,
-        "--output-formats", "json",
-        "--output-directory", str(prowler_raw_dir)
+        "-f", aws_region,
+        "-M", "json",
+        "-O", str(prowler_raw_dir)
     ]
 
     prowler_version = get_prowler_version()
