@@ -57,13 +57,22 @@ def build_manifest(scan_id: str) -> None:
     if env_region:
         regions.add(env_region)
 
+    import boto3
+    from botocore.exceptions import ClientError
+    aws_account_id = ""
+    try:
+        sts = boto3.client("sts", region_name=env_region or "eu-west-1")
+        aws_account_id = sts.get_caller_identity()["Account"]
+    except ClientError as e:
+        print(f"[build_deployment_manifest] WARNING: Could not get AWS account ID via STS: {e}")
+
     github_meta = collect_github_metadata()
     
     manifest = {
         "schema_version": "1.0",
         "scan_id": scan_id,
         "generated_at": utc_now_iso(),
-        "aws_account_id": inventory.get("aws_account_id", ""),
+        "aws_account_id": aws_account_id,
         "regions": sorted(list(regions)),
         "repository": {
             "url": github_meta.get("repository_url", ""),
