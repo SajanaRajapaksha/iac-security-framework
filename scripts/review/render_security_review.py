@@ -68,6 +68,46 @@ def render_markdown(review: dict, guidance: dict, usage: dict, review_dir: Path)
     md_lines.extend([
         "## Pre-Deployment Findings",
     ])
+    
+    g_list = guidance.get("guidance", [])
+    guidance_map = {}
+    for g in g_list:
+        for fid in g.get("affected_finding_ids", []):
+            guidance_map[fid] = g
+            
+    def append_finding_guidance(f_id: str):
+        g = guidance_map.get(f_id)
+        if not g:
+            return
+        
+        sr = g.get("scanner_remediation")
+        if sr:
+            md_lines.extend([
+                "",
+                "#### Scanner Remediation",
+                f"{sr}"
+            ])
+            
+        ai = g.get("ai_guidance", {})
+        if ai and g.get("source") != "SCANNER_METADATA_ONLY":
+            md_lines.extend([
+                "",
+                "#### AI Remediation Guidance",
+                f"- **Summary**: {ai.get('summary', 'N/A')}",
+                f"- **Terraform Action**: {ai.get('terraform_action', 'N/A')}",
+                f"- **Runtime Action**: {ai.get('runtime_action', 'N/A')}",
+                f"- **Validation Step**: {ai.get('validation_step', 'N/A')}",
+                f"- **Operational Caution**: {ai.get('operational_caution', 'N/A')}",
+                f"- **Source**: {g.get('source')}"
+            ])
+        else:
+            md_lines.extend([
+                "",
+                "#### AI Remediation Guidance",
+                "Unavailable.",
+                "- **Source**: SCANNER_METADATA_ONLY"
+            ])
+
     if not review.get("pre_deployment_findings"):
         md_lines.append("No pre-deployment findings.\n")
     else:
@@ -78,9 +118,10 @@ def render_markdown(review: dict, guidance: dict, usage: dict, review_dir: Path)
                 f"- **Check ID**: `{f.get('check_id')}`",
                 f"- **Resource**: `{f.get('resource')}`",
                 f"- **Location**: `{f.get('location')}`",
-                f"- **Description**: {f.get('description')}",
-                ""
+                f"- **Description**: {f.get('description')}"
             ])
+            append_finding_guidance(f.get("review_finding_id"))
+            md_lines.append("")
             
     md_lines.extend([
         "## Post-Deployment Findings",
@@ -96,9 +137,10 @@ def render_markdown(review: dict, guidance: dict, usage: dict, review_dir: Path)
                 f"- **Service**: {f.get('service')}",
                 f"- **Resource**: `{f.get('resource')}`",
                 f"- **Region**: {f.get('region')}",
-                f"- **Description**: {f.get('description')}",
-                ""
+                f"- **Description**: {f.get('description')}"
             ])
+            append_finding_guidance(f.get("review_finding_id"))
+            md_lines.append("")
             
     md_lines.extend([
         "## OpenAI Usage Summary",
@@ -128,10 +170,10 @@ def render_markdown(review: dict, guidance: dict, usage: dict, review_dir: Path)
         ""
     ]
     
-    g_list = guidance.get("guidance", [])
+    g_list_local = guidance.get("guidance", [])
     
     def render_stage_guidance(stage: str):
-        items = [g for g in g_list if g.get("stage") == stage]
+        items = [g for g in g_list_local if g.get("stage") == stage]
         # Sort by priority CRITICAL -> UNKNOWN
         order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFORMATIONAL": 4, "INFO": 4, "UNKNOWN": 5}
         items.sort(key=lambda x: order.get(x.get("priority", "UNKNOWN").upper(), 99))

@@ -4,7 +4,7 @@ import argparse
 import os
 import time
 from pathlib import Path
-
+import json
 try:
     import openai
 except ImportError:
@@ -18,7 +18,26 @@ from scripts.review.remediation_cache import generate_cache_key, load_cache, sav
 from scripts.utils.evidence import utc_now_iso
 
 PROMPT_VERSION = "iac-security-review-remediation-v1"
-BATCH_SIZE = 10
+BATCH_SIZE = 6
+
+REQUIRED_FIELDS = {
+    "finding_key",
+    "priority",
+    "summary",
+    "terraform_action",
+    "runtime_action",
+    "validation_step",
+    "operational_caution",
+}
+
+VALID_PRIORITIES = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL"}
+
+def get_model_name() -> str:
+    return (
+        os.environ.get("OPENAI_REMEDIATION_MODEL")
+        or os.environ.get("OPENAI_MODEL")
+        or "gpt-4o-mini"
+    )
 
 SYSTEM_PROMPT = """You are a cloud security expert analyzing Infrastructure as Code and runtime findings.
 Your task is to provide concise, actionable remediation guidance for groups of identical findings.
@@ -84,11 +103,15 @@ def build_remediation_groups(security_review: dict) -> dict:
     
     return groups
 
-def run_ai_batch(groups: list[dict], client) -> list[dict]:
+def run_ai_batch(
+    groups: list[dict],
+    client,
+) -> tuple[list[dict], dict, str | None]:
     if not openai:
-        return []
+        return [], {}, "OpenAI library not installed."
         
-    model = os.environ.get("OPENAI_REMEDIATION_MODEL") or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    model = get_model_name()
+    max_tokens = min(4096, 350 * len(groups) + 400)
     
     payload = []
     for g in groups:
@@ -114,11 +137,14 @@ def run_ai_batch(groups: list[dict], client) -> list[dict]:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": json.dumps({"findings_to_analyze": payload})}
             ],
-            max_tokens=2048,
+            max_tokens=max_tokens,
             temperature=0.0
         )
         content = response.choices[0].message.content
-        data = json.loads(content)
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError as e:
+            return [], {}, f"JSON Decode Error: {e}"
         
         usage = response.usage
         tokens = {
@@ -127,7 +153,33 @@ def run_ai_batch(groups: list[dict], client) -> list[dict]:
             "total_tokens": usage.total_tokens if usage else 0
         }
         
-        return data.get("remediations", []), tokens, None
+        raw_rems = data.get("remediations", [])
+        if not isinstance(raw_rems, list):
+            return [], tokens, "Response 'remediations' is not a list."
+
+        valid_rems = []
+        batch_keys = {g["finding_key"] for g in groups}
+        
+        for rem in raw_rems:
+            if not isinstance(rem, dict):
+                continue
+            if rem.get("finding_key") not in batch_keys:
+                continue
+            
+            missing = REQUIRED_FIELDS - set(rem.keys())
+            if missing:
+                continue
+                
+            priority = str(rem.get("priority", "")).upper()
+            if priority not in VALID_PRIORITIES:
+                continue
+                
+            if any(not isinstance(rem[k], str) for k in REQUIRED_FIELDS):
+                continue
+                
+            valid_rems.append(rem)
+            
+        return valid_rems, tokens, None
     except Exception as e:
         return [], {}, str(e)
 
@@ -199,9 +251,22 @@ def main():
             
             rems, t, err = run_ai_batch(batch_groups, client)
             api_requests += 1
-            if err:
-                error_log.append(err)
+            
+            expected_keys = {g["finding_key"] for g in batch_groups}
+            returned_keys = {r["finding_key"] for r in rems}
+            missing_keys = expected_keys - returned_keys
+            
+            if missing_keys:
                 ai_status = "AI_REMEDIATION_PARTIAL"
+                
+            if err:
+                sanitized_error = str(err)
+                if api_key:
+                    sanitized_error = sanitized_error.replace(api_key, "***")
+                error_log.append(sanitized_error)
+                ai_status = "AI_REMEDIATION_PARTIAL"
+                
+                print(f"[generate_ai_remediation] Batch {i // BATCH_SIZE + 1} failed: {sanitized_error}", file=sys.stderr)
             else:
                 tokens_stats["in"] += t.get("prompt_tokens", 0)
                 tokens_stats["out"] += t.get("completion_tokens", 0)
@@ -293,7 +358,7 @@ def main():
     safe_write_json(str(sec_review_path), sec_review)
 
     # Usage
-    model_name = os.environ.get("OPENAI_REMEDIATION_MODEL") or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+    model_name = get_model_name()
     usage = {
         "scan_id": scan_id,
         "module": "Security Review AI Remediation",
@@ -312,7 +377,23 @@ def main():
         "errors": error_log
     }
     safe_write_json(str(usage_path), usage)
-    print(f"[generate_ai_remediation] Done. Status: {ai_status}. Hits: {cache_hits}, Misses: {cache_misses}")
+    
+    print("============================================================")
+    print("  AI REMEDIATION SUMMARY")
+    print("============================================================")
+    print(f"OpenAI model             : {model_name}")
+    print(f"Total remediation groups : {len(groups)}")
+    print(f"Cache hits               : {cache_hits}")
+    print(f"Cache misses             : {cache_misses}")
+    print(f"API requests             : {api_requests}")
+    print(f"AI guidance generated    : {len(new_guidance)}")
+    print(f"Cached guidance used     : {len(cached_guidance)}")
+    print(f"Scanner-only fallbacks   : {len(fallback_guidance)}")
+    print(f"Input tokens             : {tokens_stats['in']}")
+    print(f"Output tokens            : {tokens_stats['out']}")
+    print(f"Total tokens             : {tokens_stats['tot']}")
+    print(f"Final status             : {ai_status}")
+    print("============================================================")
 
 if __name__ == "__main__":
     main()

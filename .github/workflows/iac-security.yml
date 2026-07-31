@@ -1266,14 +1266,39 @@ jobs:
         if: always() && steps.tf_apply.outputs.apply_exit_code == '0'
         run: python scripts/review/generate_security_review.py "$SCAN_ID"
 
+      - name: "Initialize review cache"
+        run: |
+          mkdir -p cache/review
+
+      - name: "Restore AI remediation cache"
+        uses: actions/cache@v4
+        with:
+          path: cache/review/remediation-guidance.json
+          key: ai-remediation-v1-${{ github.ref_name }}
+          restore-keys: |
+            ai-remediation-v1-
+
       - name: "Stage 45: Generate AI remediation guidance"
         id: ai_remediation
         continue-on-error: true
         if: always() && steps.tf_apply.outputs.apply_exit_code == '0'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_REMEDIATION_MODEL: ${{ vars.OPENAI_REMEDIATION_MODEL }}
+          OPENAI_REMEDIATION_MODEL: ${{ vars.OPENAI_REMEDIATION_MODEL || 'gpt-4o-mini' }}
         run: python scripts/review/generate_ai_remediation.py "$SCAN_ID"
+
+      - name: "Print AI remediation diagnostics"
+        if: always()
+        run: |
+          USAGE_FILE="reports/review/${SCAN_ID}/openai-usage.json"
+          if [[ -f "$USAGE_FILE" ]]; then
+            jq . "$USAGE_FILE"
+          fi
+
+      - name: "Print remediation guidance for every finding"
+        if: always()
+        run: |
+          python scripts/review/list_remediation_guidance.py "$SCAN_ID"
 
       - name: "Stage 46: Render final security review"
         if: always() && steps.tf_apply.outputs.apply_exit_code == '0'

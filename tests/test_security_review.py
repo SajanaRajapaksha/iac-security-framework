@@ -145,8 +145,19 @@ def test_run_ai_batch(mock_env, mock_openai):
     mock_client = MagicMock()
     mock_response = MagicMock()
     
+    # Valid response matching finding_key and ALL required fields
     mock_msg = MagicMock()
-    mock_msg.message.content = '{"remediations": [{"finding_key": "k1", "summary": "sum"}]}'
+    mock_msg.message.content = json.dumps({
+        "remediations": [{
+            "finding_key": "k1", 
+            "priority": "HIGH", 
+            "summary": "sum",
+            "terraform_action": "t",
+            "runtime_action": "r",
+            "validation_step": "v",
+            "operational_caution": "c"
+        }]
+    })
     mock_response.choices = [mock_msg]
     mock_response.usage.prompt_tokens = 10
     mock_response.usage.completion_tokens = 20
@@ -162,6 +173,32 @@ def test_run_ai_batch(mock_env, mock_openai):
     assert rems[0]["summary"] == "sum"
     assert t["prompt_tokens"] == 10
     assert t["total_tokens"] == 30
+
+@patch("scripts.review.generate_ai_remediation.openai")
+def test_run_ai_batch_invalid_response(mock_openai):
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    
+    # Missing required field 'runtime_action'
+    mock_msg = MagicMock()
+    mock_msg.message.content = json.dumps({
+        "remediations": [{
+            "finding_key": "k1", 
+            "priority": "HIGH", 
+            "summary": "sum",
+            "terraform_action": "t",
+            "validation_step": "v",
+            "operational_caution": "c"
+        }]
+    })
+    mock_response.choices = [mock_msg]
+    mock_client.chat.completions.create.return_value = mock_response
+    
+    groups = [{"finding_key": "k1", "stage": "PRE", "severity": "HIGH", "scanner": "c", "check_id": "c1", "title": "t1", "resource_type": "r", "description": "d", "existing_remediation": "", "affected_resource_count": 1, "sample_resources": []}]
+    rems, t, err = run_ai_batch(groups, mock_client)
+    
+    # Validation should drop the malformed item
+    assert len(rems) == 0
 
 @patch("scripts.review.generate_ai_remediation.openai")
 def test_run_ai_batch_error(mock_openai):
