@@ -450,15 +450,28 @@ jobs:
       # STAGE 21c: TERRAFORM INIT WITH SCAN-ISOLATED S3 BACKEND
       # ================================================================
 
+      - name: "Stage 21c: Prepare framework S3 backend"
+        run: |
+          python scripts/deployment/prepare_terraform_backend.py \
+            "$SCAN_ID" \
+            "${{ steps.deployment_contract.outputs.deployment_root }}"
+
       - name: "Stage 21c: Terraform init with scan-isolated S3 backend"
         working-directory: ${{ steps.deployment_contract.outputs.deployment_root }}
         run: |
           terraform init \
             -input=false \
+            -reconfigure \
             -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
             -backend-config="key=research/${SCAN_ID}/terraform.tfstate" \
             -backend-config="region=${{ vars.AWS_REGION }}" \
             -backend-config="use_lockfile=true"
+
+      - name: "Stage 21c: Verify Terraform backend configuration"
+        run: |
+          python scripts/deployment/verify_terraform_backend.py \
+            "$SCAN_ID" \
+            "${{ steps.deployment_contract.outputs.deployment_root }}"
 
       # ================================================================
       # STAGE 21d: VALIDATE AWS PROVIDER VERSION
@@ -900,15 +913,28 @@ jobs:
             "${{ steps.deployment_contract.outputs.deployment_root }}" \
             --save
 
+      - name: "Stage 28: Prepare framework S3 backend"
+        run: |
+          python scripts/deployment/prepare_terraform_backend.py \
+            "$SCAN_ID" \
+            "${{ steps.deployment_contract.outputs.deployment_root }}"
+
       - name: "Stage 28: Terraform init — same S3 backend"
         working-directory: ${{ steps.deployment_contract.outputs.deployment_root }}
         run: |
           terraform init \
             -input=false \
+            -reconfigure \
             -backend-config="bucket=${TF_STATE_BUCKET}" \
             -backend-config="key=research/${SCAN_ID}/terraform.tfstate" \
             -backend-config="region=${AWS_REGION}" \
             -backend-config="use_lockfile=true"
+
+      - name: "Stage 28: Verify Terraform backend configuration"
+        run: |
+          python scripts/deployment/verify_terraform_backend.py \
+            "$SCAN_ID" \
+            "${{ steps.deployment_contract.outputs.deployment_root }}"
 
       - name: "Stage 28: Validate AWS provider version"
         run: |
@@ -976,7 +1002,17 @@ jobs:
           mkdir -p "${GITHUB_WORKSPACE}/reports/deployment/${SCAN_ID}"
           cp "$APPLY_OUTPUT" "${GITHUB_WORKSPACE}/reports/deployment/${SCAN_ID}/terraform-apply.txt"
 
-          exit $APPLY_EXIT_CODE
+          if [ "$APPLY_EXIT_CODE" -ne 0 ]; then
+            echo "::error::Terraform apply failed with exit code $APPLY_EXIT_CODE"
+            exit $APPLY_EXIT_CODE
+          fi
+
+      - name: "Stage 29: Verify remote state after apply"
+        if: always() && steps.tf_apply.outputs.apply_exit_code == '0'
+        run: |
+          python scripts/deployment/verify_remote_state.py \
+            "$SCAN_ID" \
+            "${{ steps.deployment_contract.outputs.deployment_root }}"
 
       - name: "Stage 29: Generate apply evidence"
         if: always()

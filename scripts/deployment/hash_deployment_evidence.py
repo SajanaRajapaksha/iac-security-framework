@@ -32,6 +32,9 @@ EVIDENCE_FILES = [
     "terraform-plan.json",
     "terraform-plan.txt",
     "terraform-plan.sha256",
+    "terraform-backend-preparation.json",
+    "terraform-backend-verification.json",
+    "terraform-remote-state-verification.json",
 ]
 
 # Files that live in the Terraform working directory (plan-dir)

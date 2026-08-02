@@ -49,6 +49,7 @@ EXCLUDE_FILES = {
     "terraform.tfstate",
     "terraform.tfstate.backup",
     "crash.log",
+    "iac_framework_backend.tf",
 }
 
 BASELINE_FILE = "deployment-source-baseline.json"
