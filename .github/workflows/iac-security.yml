@@ -985,6 +985,7 @@ jobs:
           echo "apply_start_time=$APPLY_START" >> "$GITHUB_OUTPUT"
 
           APPLY_OUTPUT="/tmp/terraform-apply-output.txt"
+          echo "apply_attempted=true" >> "$GITHUB_OUTPUT"
 
           set -o pipefail
           env \
@@ -1350,3 +1351,101 @@ jobs:
           retention-days: 30
           path: |
             reports/review/${{ env.SCAN_ID }}/
+
+      # ================================================================
+      # CONTROLLED AWS INFRASTRUCTURE CLEANUP (STAGES 48-55)
+      # ================================================================
+
+      - name: "Stage 48: Re-authenticate AWS for controlled cleanup"
+        if: always() && steps.tf_apply.outputs.apply_attempted == 'true'
+        uses: aws-actions/configure-aws-credentials@v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN || vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: terraform-cleanup-${{ env.SCAN_ID }}
+
+      - name: "Stage 48: Verify fresh AWS identity"
+        if: always() && steps.tf_apply.outputs.apply_attempted == 'true'
+        run: aws sts get-caller-identity
+
+      - name: "Stage 49: Reconnect to exact S3 Terraform state"
+        if: always() && steps.tf_apply.outputs.apply_attempted == 'true'
+        run: |
+          python scripts/deployment/prepare_terraform_backend.py "$SCAN_ID" "${{ steps.deployment_contract.outputs.deployment_root }}"
+          cd "${{ steps.deployment_contract.outputs.deployment_root }}"
+          terraform init -input=false -reconfigure \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="key=research/${SCAN_ID}/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="use_lockfile=true"
+          cd -
+          python scripts/deployment/verify_terraform_backend.py "$SCAN_ID" "${{ steps.deployment_contract.outputs.deployment_root }}"
+
+      - name: "Stage 50: Capture pre-destroy evidence"
+        if: always() && steps.tf_apply.outputs.apply_attempted == 'true'
+        working-directory: ${{ steps.deployment_contract.outputs.deployment_root }}
+        run: |
+          mkdir -p "${GITHUB_WORKSPACE}/reports/deployment/${SCAN_ID}"
+          terraform state list > "${GITHUB_WORKSPACE}/reports/deployment/${SCAN_ID}/pre-destroy-state-addresses.txt" || true
+
+      - name: "Stage 51: Controlled Terraform destroy"
+        if: always() && steps.tf_apply.outputs.apply_attempted == 'true'
+        id: tf_destroy
+        working-directory: ${{ steps.deployment_contract.outputs.deployment_root }}
+        run: |
+          DESTROY_START=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          echo "destroy_start_time=$DESTROY_START" >> "$GITHUB_OUTPUT"
+          
+          set -o pipefail
+          env \
+            "TF_AWS_DEFAULT_TAGS_scan-id=${SCAN_ID}" \
+            "TF_AWS_DEFAULT_TAGS_managed-by=iac-security-framework" \
+            terraform destroy -input=false -auto-approve 2>&1 | tee "${GITHUB_WORKSPACE}/reports/deployment/${SCAN_ID}/terraform-destroy.txt"
+          DESTROY_EXIT_CODE=${PIPESTATUS[0]}
+          
+          DESTROY_FINISH=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          echo "destroy_finish_time=$DESTROY_FINISH" >> "$GITHUB_OUTPUT"
+          echo "destroy_exit_code=$DESTROY_EXIT_CODE" >> "$GITHUB_OUTPUT"
+
+      - name: "Stage 52: Verify Terraform state empty"
+        if: always() && steps.tf_apply.outputs.apply_attempted == 'true'
+        working-directory: ${{ steps.deployment_contract.outputs.deployment_root }}
+        run: |
+          terraform state list > "${GITHUB_WORKSPACE}/reports/deployment/${SCAN_ID}/post-destroy-state-addresses.txt" || true
+
+      - name: "Stage 53: Verify tagged AWS resources gone"
+        if: always() && steps.tf_apply.outputs.apply_attempted == 'true'
+        run: |
+          # Bounded retry loop for AWS API eventual consistency
+          for i in 1 2 3; do
+            python scripts/deployment/discover_tagged_aws_resources.py "$SCAN_ID" --output reports/deployment/$SCAN_ID/post-destroy-tagged-resources.json
+            COUNT=$(jq '. | if type == "array" then length else .resource_count // (if .resources then (.resources|length) else 0 end) end' reports/deployment/$SCAN_ID/post-destroy-tagged-resources.json || echo "0")
+            if [ "$COUNT" -eq 0 ]; then
+              break
+            fi
+            echo "Waiting 10s for eventual consistency (Attempt $i)..."
+            sleep 10
+          done
+
+      - name: "Stage 54: Generate cleanup evidence"
+        if: always() && steps.tf_apply.outputs.apply_attempted == 'true'
+        run: |
+          python scripts/deployment/generate_cleanup_evidence.py \
+            "$SCAN_ID" \
+            --destroy-exit-code "${{ steps.tf_destroy.outputs.destroy_exit_code }}" \
+            --destroy-start-time "${{ steps.tf_destroy.outputs.destroy_start_time }}" \
+            --destroy-finish-time "${{ steps.tf_destroy.outputs.destroy_finish_time }}"
+
+      - name: "Stage 55: Upload cleanup evidence artifacts"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-cleanup-${{ env.SCAN_ID }}
+          retention-days: 30
+          path: |
+            reports/deployment/${{ env.SCAN_ID }}/pre-destroy-state-addresses.txt
+            reports/deployment/${{ env.SCAN_ID }}/terraform-destroy.txt
+            reports/deployment/${{ env.SCAN_ID }}/post-destroy-state-addresses.txt
+            reports/deployment/${{ env.SCAN_ID }}/post-destroy-tagged-resources.json
+            reports/deployment/${{ env.SCAN_ID }}/terraform-destroy-evidence.json
+            reports/deployment/${{ env.SCAN_ID }}/terraform-destroy-evidence.sha256

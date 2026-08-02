@@ -18,6 +18,7 @@ Usage:
 
 Output:
     reports/deployment/<SCAN_ID>/tagged-aws-resource-inventory.json
+    (Or a custom path if --output is provided)
 """
 
 import os
@@ -90,6 +91,7 @@ def main() -> None:
     )
     parser.add_argument("scan_id", help="Unique SCAN_ID")
     parser.add_argument("--region", default="")
+    parser.add_argument("--output", default="", help="Custom output path")
     args = parser.parse_args()
 
     scan_id: str = args.scan_id
@@ -97,7 +99,12 @@ def main() -> None:
 
     deploy_dir = ROOT_DIR / "reports" / "deployment" / scan_id
     deploy_dir.mkdir(parents=True, exist_ok=True)
-    out_path = deploy_dir / "tagged-aws-resource-inventory.json"
+    
+    if args.output:
+        out_path = Path(args.output).resolve()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        out_path = deploy_dir / "tagged-aws-resource-inventory.json"
 
     resources: list[dict] = []
     errors: list[str] = []
