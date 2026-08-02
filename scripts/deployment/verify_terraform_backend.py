@@ -30,7 +30,8 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / "terraform-backend-verification.json"
     
-    expected_bucket = os.environ.get("TF_STATE_BUCKET", "unknown")
+    expected_bucket = os.environ.get("TF_STATE_BUCKET")
+    expected_region = os.environ.get("AWS_REGION")
     expected_key = f"research/{scan_id}/terraform.tfstate"
     
     tfstate_path = deployment_root / ".terraform" / "terraform.tfstate"
@@ -38,9 +39,14 @@ def main():
     actual_type = None
     actual_bucket = None
     actual_key = None
+    actual_region = None
     status = "PASS"
     
-    if not tfstate_path.is_file():
+    if not expected_bucket:
+        status = "EXPECTED_BUCKET_NOT_CONFIGURED"
+    elif not expected_region:
+        status = "EXPECTED_REGION_NOT_CONFIGURED"
+    elif not tfstate_path.is_file():
         status = "MISSING_TERRAFORM_TFSTATE"
     else:
         try:
@@ -52,11 +58,15 @@ def main():
                 config = backend_block.get("config", {})
                 actual_bucket = config.get("bucket")
                 actual_key = config.get("key")
+                actual_region = config.get("region")
                 
                 if actual_bucket != expected_bucket:
                     status = "BACKEND_BUCKET_MISMATCH"
                 elif actual_key != expected_key:
                     status = "BACKEND_KEY_MISMATCH"
+                elif actual_region and actual_region != expected_region:
+                    # some TF versions might not enforce region locally in the same way, but if present it should match
+                    status = "BACKEND_REGION_MISMATCH"
             else:
                 status = "INVALID_BACKEND_TYPE"
                 
@@ -72,6 +82,8 @@ def main():
         "actual_bucket": actual_bucket,
         "expected_key": expected_key,
         "actual_key": actual_key,
+        "expected_region": expected_region,
+        "actual_region": actual_region,
         "timestamp": utc_now_iso(),
         "status": status
     }

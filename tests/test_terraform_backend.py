@@ -70,6 +70,7 @@ def test_verify_terraform_backend_success(mock_write, mock_exit, tmp_path):
     from scripts.deployment import verify_terraform_backend
     
     os.environ["TF_STATE_BUCKET"] = "test-bucket"
+    os.environ["AWS_REGION"] = "us-east-1"
     
     # Mock .terraform/terraform.tfstate
     dot_tf = tmp_path / ".terraform"
@@ -99,6 +100,7 @@ def test_verify_terraform_backend_wrong_bucket(mock_write, mock_exit, tmp_path):
     from scripts.deployment import verify_terraform_backend
     
     os.environ["TF_STATE_BUCKET"] = "test-bucket"
+    os.environ["AWS_REGION"] = "us-east-1"
     
     dot_tf = tmp_path / ".terraform"
     dot_tf.mkdir()
@@ -126,6 +128,7 @@ def test_verify_terraform_backend_wrong_key(mock_write, mock_exit, tmp_path):
     from scripts.deployment import verify_terraform_backend
     
     os.environ["TF_STATE_BUCKET"] = "test-bucket"
+    os.environ["AWS_REGION"] = "us-east-1"
     
     dot_tf = tmp_path / ".terraform"
     dot_tf.mkdir()
@@ -149,10 +152,43 @@ def test_verify_terraform_backend_wrong_key(mock_write, mock_exit, tmp_path):
     
 @patch("scripts.deployment.verify_terraform_backend.sys.exit")
 @patch("scripts.deployment.verify_terraform_backend.safe_write_json")
+def test_verify_terraform_backend_missing_bucket(mock_write, mock_exit, tmp_path):
+    from scripts.deployment import verify_terraform_backend
+    
+    if "TF_STATE_BUCKET" in os.environ:
+        del os.environ["TF_STATE_BUCKET"]
+    os.environ["AWS_REGION"] = "us-east-1"
+    
+    with patch("sys.argv", ["verify", "SCAN-1", str(tmp_path)]):
+        verify_terraform_backend.main()
+        
+    mock_exit.assert_called_with(1)
+    written_data = mock_write.call_args[0][1]
+    assert written_data["status"] == "EXPECTED_BUCKET_NOT_CONFIGURED"
+
+@patch("scripts.deployment.verify_terraform_backend.sys.exit")
+@patch("scripts.deployment.verify_terraform_backend.safe_write_json")
+def test_verify_terraform_backend_missing_region(mock_write, mock_exit, tmp_path):
+    from scripts.deployment import verify_terraform_backend
+    
+    os.environ["TF_STATE_BUCKET"] = "test-bucket"
+    if "AWS_REGION" in os.environ:
+        del os.environ["AWS_REGION"]
+    
+    with patch("sys.argv", ["verify", "SCAN-1", str(tmp_path)]):
+        verify_terraform_backend.main()
+        
+    mock_exit.assert_called_with(1)
+    written_data = mock_write.call_args[0][1]
+    assert written_data["status"] == "EXPECTED_REGION_NOT_CONFIGURED"
+    
+@patch("scripts.deployment.verify_terraform_backend.sys.exit")
+@patch("scripts.deployment.verify_terraform_backend.safe_write_json")
 def test_verify_terraform_backend_wrong_type(mock_write, mock_exit, tmp_path):
     from scripts.deployment import verify_terraform_backend
     
     os.environ["TF_STATE_BUCKET"] = "test-bucket"
+    os.environ["AWS_REGION"] = "us-east-1"
     
     dot_tf = tmp_path / ".terraform"
     dot_tf.mkdir()

@@ -352,6 +352,8 @@ jobs:
 
     env:
       SCAN_ID: ${{ needs.security-pipeline.outputs.scan_id }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
 
     steps:
       # ================================================================
