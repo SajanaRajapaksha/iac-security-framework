@@ -73,20 +73,32 @@ def _assign_band(score: int) -> tuple[str, str]:
     return "CRITICAL_RISK", "BLOCK_RECOMMENDED"
 
 
-def _resource_count_from_metadata(risk_dir: Path, scan_id: str) -> int | None:
-    """Try to read resource_count from any existing scan metadata file."""
-    candidates = [
-        risk_dir / "finding-enrichment-summary.json",
-        ROOT_DIR / "repositories" / "metadata" / scan_id / "scan-metadata.json",
-        ROOT_DIR / "reports" / "static" / scan_id / "combined" / "static-analysis-evidence.json",
-    ]
-    for path in candidates:
-        data = safe_read_json(str(path))
-        if isinstance(data, dict):
-            rc = data.get("resource_count")
-            if isinstance(rc, int) and rc > 0:
-                return rc
+def _load_predeployment_inventory(risk_dir: Path) -> dict | None:
+    """Load the authoritative predeployment-resource-inventory.json."""
+    inv_path = risk_dir / "predeployment-resource-inventory.json"
+    data = safe_read_json(str(inv_path))
+    if isinstance(data, dict) and isinstance(data.get("resource_count"), int):
+        return data
     return None
+
+
+def _write_not_calculated(risk_dir: Path, scan_id: str, reason: str) -> None:
+    """Write a NOT_CALCULATED result and exit."""
+    risk_dir.mkdir(parents=True, exist_ok=True)
+    doc = {
+        "scan_id": scan_id,
+        "generated_at": utc_now_iso(),
+        "module": "Pre-Deployment Risk Scoring Engine",
+        "status": "NOT_CALCULATED",
+        "reason": reason,
+        "security_conclusion_available": False,
+    }
+    safe_write_json(str(risk_dir / "predeployment-risk-score.json"), doc)
+    print(
+        f"[predeployment_risk_score] NOT_CALCULATED: {reason}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -220,39 +232,51 @@ def main() -> None:
     warnings: list[str] = []
 
     # ------------------------------------------------------------------ #
-    # Determine resource count                                            #
+    # Determine total resource count (authoritative denominator)           #
     # ------------------------------------------------------------------ #
-    resource_count_source: str
-    resource_count: int
+    inventory = _load_predeployment_inventory(risk_dir)
 
-    # Preferred source a: existing metadata
-    rc_meta = _resource_count_from_metadata(risk_dir, scan_id)
-    if rc_meta and rc_meta > 0:
-        resource_count = rc_meta
-        resource_count_source = "metadata"
+    if inventory and inventory.get("resource_count", 0) > 0:
+        total_resource_count: int = inventory["resource_count"]
+        resource_count_source: str = inventory.get(
+            "resource_count_source", "predeployment_resource_inventory"
+        )
     else:
-        # Preferred source b: unique resources from enriched findings
-        unique_resources = {
-            f.get("resource") for f in findings if f.get("resource") and f.get("resource") != "Unknown"
-        }
-        if unique_resources:
-            resource_count = len(unique_resources)
-            resource_count_source = "unique_resources_from_findings"
-        else:
-            # Fallback c: default to 1
-            resource_count = 1
-            resource_count_source = "defaulted"
-            warnings.append("resource_count_missing_defaulted_to_1")
+        _write_not_calculated(
+            risk_dir, scan_id,
+            "Pre-deployment resource inventory not found or contains zero resources. "
+            "Run build_predeployment_resource_inventory.py before risk scoring."
+        )
+        return  # unreachable after sys.exit but keeps linters happy
 
-    # Safety guard
-    if resource_count < 1:
-        resource_count = 1
-        warnings.append("resource_count_clamped_to_1")
+    # ------------------------------------------------------------------ #
+    # Affected resource count                                             #
+    # ------------------------------------------------------------------ #
+    affected_resources: set[str] = {
+        f.get("resource")
+        for f in findings
+        if f.get("resource") and f.get("resource") != "Unknown"
+    }
+    affected_resource_count: int = len(affected_resources)
+
+    if affected_resource_count > total_resource_count:
+        _write_not_calculated(
+            risk_dir, scan_id,
+            f"Validation failure: affected_resource_count ({affected_resource_count}) "
+            f"> total_resource_count ({total_resource_count}). "
+            "The resource inventory may be incomplete."
+        )
+        return
+
+    affected_resource_ratio: float = (
+        round(affected_resource_count / total_resource_count, 4)
+        if total_resource_count > 0 else 0.0
+    )
 
     # ------------------------------------------------------------------ #
     # Score                                                               #
     # ------------------------------------------------------------------ #
-    result = calculate_score(findings, resource_count)
+    result = calculate_score(findings, total_resource_count)
 
     # ------------------------------------------------------------------ #
     # Build JSON output                                                   #
@@ -263,6 +287,7 @@ def main() -> None:
         "scan_id": scan_id,
         "generated_at": utc_now_iso(),
         "module": "Pre-Deployment Risk Scoring Engine",
+        "status": "CALCULATED",
         "score_type": "pre_deployment_security_posture_score",
         "score_scale": {
             "minimum": 0,
@@ -279,7 +304,9 @@ def main() -> None:
         "inputs": {
             "enriched_findings_path": enriched_findings_rel,
             "resource_count_source": resource_count_source,
-            "resource_count": resource_count,
+            "total_resource_count": total_resource_count,
+            "affected_resource_count": affected_resource_count,
+            "affected_resource_ratio": affected_resource_ratio,
             "total_findings": len(findings),
             "confirmed_findings": result["confirmed_count"],
             "unknown_findings": result["unknown_count"],
@@ -324,7 +351,9 @@ def main() -> None:
         f"| **Suggested Decision** | **{result['suggested_decision']}** |",
         f"| Review Required | {str(result['review_required']).lower()} |",
         f"| Unknown Findings Present | {str(result['unknown_findings_present']).lower()} |",
-        f"| Resource Count | {resource_count} (source: {resource_count_source}) |",
+        f"| Total Resource Count | {total_resource_count} (source: {resource_count_source}) |",
+        f"| Affected Resource Count | {affected_resource_count} |",
+        f"| Affected Resource Ratio | {affected_resource_ratio} |",
         f"| Total Findings | {len(findings)} |",
         f"| Confirmed Findings | {result['confirmed_count']} |",
         f"| Unknown Findings | {result['unknown_count']} |",
@@ -414,7 +443,9 @@ def main() -> None:
     print(f"Score                : {result['score']} / 1000")
     print(f"Risk Band            : {result['risk_band']}")
     print(f"Suggested Decision   : {result['suggested_decision']}")
-    print(f"Resource Count       : {resource_count}  (source: {resource_count_source})")
+    print(f"Total Resource Count : {total_resource_count}  (source: {resource_count_source})")
+    print(f"Affected Resources   : {affected_resource_count}")
+    print(f"Affected Ratio       : {affected_resource_ratio}")
     print(f"Total Findings       : {len(findings)}")
     print(f"Confirmed Findings   : {result['confirmed_count']}")
     print(f"Unknown Findings     : {result['unknown_count']}")

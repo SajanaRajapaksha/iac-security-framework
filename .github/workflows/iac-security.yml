@@ -271,6 +271,10 @@ jobs:
       # STAGE 18: PRE-DEPLOYMENT RISK SCORING ENGINE
       # ================================================================
 
+      - name: "Stage 18: Build pre-deployment resource inventory"
+        if: steps.terraform_validation.outcome == 'success'
+        run: python scripts/risk/build_predeployment_resource_inventory.py "$SCAN_ID"
+
       - name: "Stage 18: Calculate pre-deployment risk score"
         if: steps.terraform_validation.outcome == 'success'
         run: python scripts/risk/calculate_predeployment_risk_score.py "$SCAN_ID"

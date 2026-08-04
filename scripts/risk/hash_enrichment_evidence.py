@@ -26,6 +26,7 @@ ARTIFACTS = [
     "ai-model-metadata.json",
     "predeployment-risk-score.json",
     "predeployment-risk-score.md",
+    "predeployment-resource-inventory.json",
 ]
 
 def main():
