@@ -27,6 +27,7 @@ Output:
 """
 
 import argparse
+import os
 import re
 import sys
 from pathlib import Path
@@ -85,11 +86,12 @@ def discover_terraform_root(scan_id: str) -> Path | None:
 def find_tf_files(root: Path) -> list[Path]:
     """Recursively find all .tf files, skipping excluded dirs/files."""
     results: list[Path] = []
-    for dirpath, dirnames, filenames in sorted(root.walk()):
+    for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in sorted(dirnames) if d not in SKIP_DIRS]
         for fname in sorted(filenames):
             if fname.endswith(".tf") and fname not in SKIP_FILES:
-                results.append(dirpath / fname)
+                results.append(Path(dirpath) / fname)
+    results.sort()
     return results
 
 
