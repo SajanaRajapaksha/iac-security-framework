@@ -348,7 +348,7 @@ jobs:
     # Only run on push to dev (never on PRs — no AWS creds for PRs).
     if: >
       github.event_name != 'pull_request' &&
-      github.ref == 'refs/heads/dev'
+      github.ref == 'refs/heads/dashboard'
 
     permissions:
       id-token: write
@@ -682,7 +682,7 @@ jobs:
     # Only on push/dispatch to dev — never on PRs.
     if: >
       github.event_name != 'pull_request' &&
-      github.ref == 'refs/heads/dev'
+      github.ref == 'refs/heads/dashboard'
 
     # GitHub Environment scopes deployment credentials.
     # Required reviewers are optional — configure them in the GitHub UI if needed.
