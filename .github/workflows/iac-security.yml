@@ -40,9 +40,9 @@ name: IaC Security Framework
 
 on:
   push:
-    branches: [dev]
+    branches: [dashboard]
   pull_request:
-    branches: [dev]
+    branches: [dashboard]
 
   workflow_dispatch:
     inputs:
