@@ -1453,3 +1453,26 @@ jobs:
             reports/deployment/${{ env.SCAN_ID }}/post-destroy-tagged-resources.json
             reports/deployment/${{ env.SCAN_ID }}/terraform-destroy-evidence.json
             reports/deployment/${{ env.SCAN_ID }}/terraform-destroy-evidence.sha256
+
+      # ================================================================
+      # DASHBOARD / S3 EVIDENCE EXPORT
+      # ================================================================
+
+      - name: "Stage 56: Build Dashboard Export Bundle"
+        if: always()
+        continue-on-error: true
+        run: python scripts/dashboard/export_dashboard_bundle.py "$SCAN_ID"
+
+      - name: "Stage 57: Validate Export JSON"
+        if: always()
+        continue-on-error: true
+        run: |
+          jq . dashboard-export/$SCAN_ID/scan-summary.json > /dev/null
+          jq . dashboard-export/$SCAN_ID/findings.json > /dev/null
+          jq . dashboard-export/$SCAN_ID/evidence-manifest.json > /dev/null
+          echo "Dashboard JSON bundle is valid."
+
+      - name: "Stage 58: Upload Raw Evidence & Dashboard JSON to S3"
+        if: always()
+        continue-on-error: true
+        run: python scripts/dashboard/upload_scan_to_s3.py "$SCAN_ID"
