@@ -18,6 +18,7 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT_DIR))
 from scripts.utils.evidence import safe_read_json
+from scripts.dashboard.export_dashboard_bundle import EVIDENCE_PATHS
 
 EVIDENCE_BUCKET = "iac-security-framework-evidence-172201861173-us-east-1"
 
@@ -67,6 +68,25 @@ def main():
     raw_uploaded = 0
     raw_missing = 0
     
+    # Check all configured sources and print diagnostics
+    print("Evidence Source Diagnostics:")
+    found_keys = set()
+    for artifact in raw_artifacts:
+        # Match original_path to keys
+        # We know if it is in manifest it was FOUND
+        pass
+        
+    for key, path_tpl in EVIDENCE_PATHS.items():
+        expected_path = ROOT_DIR / path_tpl.format(scan_id=scan_id)
+        if expected_path.is_file():
+            print(f"[FOUND]   {key}")
+            found_keys.add(key)
+        else:
+            # Check if we should classify as SKIPPED
+            # If deployment never happened, deployment files are genuinely missing/skipped
+            print(f"[MISSING] {key} (Not generated or unavailable)")
+    print("")
+
     for artifact in raw_artifacts:
         orig_path = ROOT_DIR / artifact["original_path"]
         s3_key = artifact["s3_key"]
@@ -91,16 +111,41 @@ def main():
     findings_data = safe_read_json(str(dashboard_dir / "findings.json"))
     findings = findings_data.get("findings", []) if isinstance(findings_data, dict) else []
     
-    with_remediation = sum(1 for f in findings if f.get("remediation", {}).get("available", False))
-    without_remediation = len(findings) - with_remediation
+    ai_remediation_count = 0
+    prowler_remediation_count = 0
+    no_remediation_count = 0
+    
+    pre_deployment_count = 0
+    post_deployment_count = 0
+
+    for f in findings:
+        if f.get("phase") == "PRE_DEPLOYMENT":
+            pre_deployment_count += 1
+        elif f.get("phase") == "POST_DEPLOYMENT":
+            post_deployment_count += 1
+            
+        rem = f.get("remediation", {})
+        if rem.get("available", False):
+            if rem.get("source") == "AI_REMEDIATION":
+                ai_remediation_count += 1
+            elif rem.get("source") == "PROWLER":
+                prowler_remediation_count += 1
+            else:
+                ai_remediation_count += 1 # Default
+        else:
+            no_remediation_count += 1
 
     print(f"Raw Artifacts Found  : {len(raw_artifacts)}")
-    print(f"Raw Artifacts Missing: {raw_missing}")
     print(f"Raw Uploaded         : {raw_uploaded}")
+    print(f"Raw Failed Uploads   : {raw_missing}")
     print("")
     print(f"Findings Exported    : {len(findings)}")
-    print(f"With Remediation     : {with_remediation}")
-    print(f"Without Remediation  : {without_remediation}")
+    print(f"Pre-Deployment       : {pre_deployment_count}")
+    print(f"Post-Deployment      : {post_deployment_count}")
+    print("")
+    print(f"AI Remediation       : {ai_remediation_count}")
+    print(f"Prowler Remediation  : {prowler_remediation_count}")
+    print(f"No Remediation       : {no_remediation_count}")
     print("")
     print("Dashboard Files:")
     for f in dashboard_files:

@@ -10,6 +10,8 @@ Usage: python scripts/dashboard/export_dashboard_bundle.py <SCAN_ID>
 """
 
 import argparse
+import ast
+import hashlib
 import os
 import sys
 from pathlib import Path
@@ -38,9 +40,9 @@ EVIDENCE_PATHS = {
     "runtime_findings": "reports/runtime/{scan_id}/normalized/runtime-findings.json",
     "postdeployment_score": "reports/runtime/{scan_id}/risk/postdeployment-risk-score.json",
     "prowler_execution": "reports/runtime/{scan_id}/prowler/prowler-execution.json",
-    "security_review": "reports/review/{scan_id}/security-review-decision.json",
-    "ai_remediation": "reports/review/{scan_id}/list_remediation_guidance.json",
-    "cleanup_evidence": "reports/cleanup/{scan_id}/cleanup-evidence.json"
+    "security_review": "reports/review/{scan_id}/security-review.json",
+    "ai_remediation": "reports/review/{scan_id}/remediation-guidance.json",
+    "cleanup_evidence": "reports/deployment/{scan_id}/terraform-destroy-evidence.json"
 }
 
 def load_evidence(scan_id: str):
@@ -54,10 +56,33 @@ def load_evidence(scan_id: str):
             }
     return loaded
 
+def normalize_severity(value) -> str:
+    """Extract a safe uppercase string severity from diverse formats."""
+    if not value:
+        return "UNKNOWN"
+        
+    if isinstance(value, dict):
+        return str(value.get("normalized") or value.get("original") or value.get("ORIGINAL") or "UNKNOWN").upper()
+        
+    if isinstance(value, str):
+        val_str = value.strip()
+        # Handle stringified dictionary e.g. "{'ORIGINAL': 'CRITICAL', ...}"
+        if val_str.startswith("{") and val_str.endswith("}"):
+            try:
+                parsed = ast.literal_eval(val_str)
+                if isinstance(parsed, dict):
+                    return str(parsed.get("normalized") or parsed.get("NORMALIZED") or parsed.get("original") or parsed.get("ORIGINAL") or "UNKNOWN").upper()
+            except (ValueError, SyntaxError):
+                pass
+        return val_str.upper()
+        
+    return "UNKNOWN"
+
+
 def generate_scan_summary(scan_id: str, evidence: dict):
     summary = {
         "scan_id": scan_id,
-        "workflow_id": "UNKNOWN",
+        "workflow_id": os.environ.get("GITHUB_RUN_ID", "UNKNOWN"),
         "scan_status": "COMPLETED",
         "started_timestamp": "NOT_AVAILABLE",
         "completed_timestamp": utc_now_iso(),
@@ -65,7 +90,7 @@ def generate_scan_summary(scan_id: str, evidence: dict):
             "url": "NOT_AVAILABLE",
             "name": "NOT_AVAILABLE",
             "branch": "NOT_AVAILABLE",
-            "commit_sha": "NOT_AVAILABLE"
+            "commit_sha": os.environ.get("GITHUB_SHA", "NOT_AVAILABLE")
         },
         "pre_deployment": {
             "risk_score": "NOT_AVAILABLE",
@@ -114,12 +139,14 @@ def generate_scan_summary(scan_id: str, evidence: dict):
 
     if "metadata" in evidence:
         md = evidence["metadata"]["data"]
-        summary["started_timestamp"] = md.get("timestamp", "NOT_AVAILABLE")
-        repo = md.get("repository", {})
-        summary["repository"]["url"] = repo.get("url", "NOT_AVAILABLE")
-        summary["repository"]["name"] = repo.get("name", "NOT_AVAILABLE")
-        summary["repository"]["branch"] = repo.get("branch", "NOT_AVAILABLE")
-        summary["repository"]["commit_sha"] = md.get("latest_commit", "NOT_AVAILABLE")
+        summary["started_timestamp"] = md.get("generated_at", "NOT_AVAILABLE")
+        
+        repo_url = md.get("repo_url", "NOT_AVAILABLE")
+        summary["repository"]["url"] = repo_url
+        if repo_url and repo_url != "NOT_AVAILABLE":
+            summary["repository"]["name"] = repo_url.split('/')[-1].replace('.git', '')
+            
+        summary["repository"]["branch"] = md.get("branch", "NOT_AVAILABLE")
 
     if "predeployment_score" in evidence:
         score_doc = evidence["predeployment_score"]["data"]
@@ -140,9 +167,12 @@ def generate_scan_summary(scan_id: str, evidence: dict):
         policy = 0
         review = 0
         for f in findings:
-            sev = str(f.get("final_severity", f.get("scanner_severity", "UNKNOWN"))).upper()
+            sev = normalize_severity(f.get("final_severity", f.get("scanner_severity", "UNKNOWN")))
             if sev in counts:
                 counts[sev] += 1
+            else:
+                counts["UNKNOWN"] += 1
+                
             if f.get("source_tool") == "checkov":
                 checkov += 1
             elif f.get("source_tool") == "policy":
@@ -172,15 +202,21 @@ def generate_scan_summary(scan_id: str, evidence: dict):
 
     if "tagged_inventory" in evidence:
         summary["deployment"]["deployed_resources"] = evidence["tagged_inventory"]["data"].get("metrics", {}).get("total_tagged", "NOT_AVAILABLE")
+        # If resources were deployed, the deployment was clearly successful/active. 
+        if summary["deployment"]["status"] != "AUTHORIZED":
+             summary["deployment"]["status"] = "EXECUTED"
 
     if "runtime_findings" in evidence:
         rf = evidence["runtime_findings"]["data"].get("findings", [])
         summary["runtime"]["finding_count"] = len(rf)
         rcounts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "UNKNOWN": 0}
         for f in rf:
-            sev = str(f.get("severity", "UNKNOWN")).upper()
+            sev = normalize_severity(f.get("severity", "UNKNOWN"))
             if sev in rcounts:
                 rcounts[sev] += 1
+            else:
+                rcounts["UNKNOWN"] += 1
+                
         summary["runtime"].update({
             "critical_count": rcounts["CRITICAL"],
             "high_count": rcounts["HIGH"],
@@ -201,14 +237,13 @@ def generate_scan_summary(scan_id: str, evidence: dict):
 
     if "security_review" in evidence:
         sr = evidence["security_review"]["data"]
-        # In final review logic, we have score_comparison
         comp = sr.get("score_comparison", {})
-        summary["risk_comparison"]["score_delta"] = comp.get("score_delta", "NOT_AVAILABLE")
-        summary["risk_comparison"]["direction"] = comp.get("direction", "NOT_AVAILABLE")
+        summary["risk_comparison"]["score_delta"] = comp.get("score_delta_points", "NOT_AVAILABLE")
+        summary["risk_comparison"]["direction"] = comp.get("comparison_result", "NOT_AVAILABLE")
         
-        final = sr.get("final_decision", {})
-        summary["final_decision"]["decision"] = final.get("action", "NOT_AVAILABLE")
-        summary["final_decision"]["reason"] = final.get("reason", "NOT_AVAILABLE")
+        rec = sr.get("review_recommendation", {})
+        summary["final_decision"]["decision"] = rec.get("decision", "NOT_AVAILABLE")
+        summary["final_decision"]["reason"] = rec.get("reason", "NOT_AVAILABLE")
         summary["final_decision"]["urgent_review_required"] = sr.get("urgent_review_required", False)
 
     if "cleanup_evidence" in evidence:
@@ -219,53 +254,72 @@ def generate_scan_summary(scan_id: str, evidence: dict):
     return summary
 
 
-def _get_remediation_doc(remediation_data, finding_id):
-    """Extract remediation for a given finding if present."""
+def _get_remediation_doc(remediation_data, finding_key):
+    """Extract remediation for a given finding based on AI guidance list."""
     if not remediation_data:
         return {"available": False}
     
-    # Check if we have standard review module output format
-    if isinstance(remediation_data, dict):
-        guidance = remediation_data.get("guidance", {})
-        if finding_id in guidance:
-            doc = guidance[finding_id]
+    # New AI Remediation format: {"guidance": [ {"finding_key": ..., "ai_guidance": ...}, ... ]}
+    guidance_list = remediation_data.get("guidance", [])
+    
+    for item in guidance_list:
+        if item.get("finding_key") == finding_key:
+            ai = item.get("ai_guidance", {})
             return {
                 "available": True,
                 "target": "IAC_SOURCE",
-                "summary": doc.get("summary", ""),
-                "steps": doc.get("terraform_action", []),
-                "terraform_example": doc.get("example", ""),
-                "verification": doc.get("runtime_action", []),
-                "references": doc.get("references", []),
+                "summary": ai.get("summary", ""),
+                "steps": ai.get("terraform_action", []),
+                "terraform_example": ai.get("example", ""),
+                "verification": ai.get("runtime_action", []),
+                "references": ai.get("references", []),
                 "source": "AI_REMEDIATION"
             }
-    
-    # If no AI remediation, fallback
+            
     return {"available": False}
+
+
+def build_finding_record_key(scanner, original_id, phase, resource_identifier):
+    """Deterministic hash for finding uniqueness."""
+    raw = f"{scanner}|{original_id}|{phase}|{resource_identifier}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 def generate_findings(scan_id: str, evidence: dict):
     all_findings = []
-    
     ai_remediation = evidence.get("ai_remediation", {}).get("data", {})
 
     # 1. Pre-deployment findings
     if "enriched_findings" in evidence:
         for f in evidence["enriched_findings"]["data"].get("findings", []):
-            rem = _get_remediation_doc(ai_remediation, f.get("finding_id"))
+            scanner = f.get("source_tool", "checkov")
+            original_scanner_id = f.get("source_rule_id", "UNKNOWN")
+            resource = f.get("resource", "Unknown")
+            
+            # Reconstruct the AI engine finding_key logic roughly (source_tool:source_rule_id:resource_type:hash)
+            # Actually, the simplest is to match the exact mechanism AI uses if possible.
+            # We'll just look up by a known key structure, or if finding_key isn't populated on `f`, we'll build it.
+            f_desc = f.get("description", "")[:50]
+            f_desc_hash = hashlib.md5(f_desc.encode()).hexdigest()[:8]
+            expected_finding_key = f"{scanner}:{original_scanner_id}:{f.get('resource_type')}:{f_desc_hash}"
+            
+            rem = _get_remediation_doc(ai_remediation, expected_finding_key)
+            
+            record_key = build_finding_record_key(scanner, original_scanner_id, "PRE_DEPLOYMENT", resource)
             
             all_findings.append({
+                "finding_record_key": record_key,
                 "finding_id": f.get("finding_id"),
-                "original_scanner_id": f.get("source_rule_id"),
-                "scanner": f.get("source_tool", "checkov"),
+                "original_scanner_id": original_scanner_id,
+                "scanner": scanner,
                 "phase": "PRE_DEPLOYMENT",
-                "severity": str(f.get("final_severity", f.get("scanner_severity", "UNKNOWN"))).upper(),
+                "severity": normalize_severity(f.get("final_severity", f.get("scanner_severity", "UNKNOWN"))),
                 "title": f.get("title", ""),
                 "description": f.get("description", ""),
                 "security_category": f.get("mapping_type", "UNKNOWN"),
                 "affected_resource_type": f.get("resource_type", "Unknown"),
-                "resource_name": f.get("resource", "Unknown"),
-                "full_address": f.get("resource", "Unknown"),
+                "resource_name": resource,
+                "full_address": resource,
                 "file_path": f.get("file_path", "Unknown"),
                 "line_start": f.get("line_start"),
                 "line_end": f.get("line_end"),
@@ -280,38 +334,58 @@ def generate_findings(scan_id: str, evidence: dict):
     # 2. Runtime findings
     if "runtime_findings" in evidence:
         for f in evidence["runtime_findings"]["data"].get("findings", []):
-            rem = _get_remediation_doc(ai_remediation, f.get("finding_id"))
+            scanner = f.get("scanner", f.get("source_tool", "prowler"))
+            original_scanner_id = f.get("control_id", f.get("check_id", "UNKNOWN"))
             
-            # Prowler may have its own remediation in the raw finding, try to pull it
+            res_obj = f.get("resource", {})
+            r_arn = res_obj.get("arn", "Unknown")
+            r_name = res_obj.get("name") or res_obj.get("id") or "Unknown"
+            
+            expected_finding_key = f"{scanner}:{original_scanner_id}:runtime:n/a" # AI doesn't typically enrich runtime the exact same way natively, but let's safely fall back
+            
+            rem = _get_remediation_doc(ai_remediation, expected_finding_key)
+            
             if not rem["available"] and f.get("remediation"):
-                rem = {
-                    "available": True,
-                    "target": "RUNTIME_AWS",
-                    "summary": f.get("remediation", {}).get("recommendation", {}).get("text", ""),
-                    "steps": [],
-                    "terraform_example": "",
-                    "verification": [],
-                    "references": [f.get("remediation", {}).get("recommendation", {}).get("url")] if f.get("remediation", {}).get("recommendation", {}).get("url") else [],
-                    "source": "PROWLER"
-                }
+                p_text = f.get("remediation", {}).get("text", "")
+                p_refs = f.get("remediation", {}).get("references", [])
+                if p_text or p_refs:
+                    rem = {
+                        "available": True,
+                        "target": "RUNTIME_AWS",
+                        "summary": p_text,
+                        "steps": [],
+                        "terraform_example": "",
+                        "verification": [],
+                        "references": p_refs,
+                        "source": "PROWLER"
+                    }
 
+            record_key = build_finding_record_key(scanner, original_scanner_id, "POST_DEPLOYMENT", r_arn)
+
+            aws_service = "Unknown"
+            if "arn:aws:" in r_arn:
+                aws_service = r_arn.split(":")[2]
+            elif f.get("service"):
+                aws_service = f.get("service")
+            
             all_findings.append({
+                "finding_record_key": record_key,
                 "finding_id": f.get("finding_id"),
-                "original_scanner_id": f.get("check_id"),
-                "scanner": f.get("source_tool", "prowler"),
+                "original_scanner_id": original_scanner_id,
+                "scanner": scanner,
                 "phase": "POST_DEPLOYMENT",
-                "severity": str(f.get("severity", "UNKNOWN")).upper(),
+                "severity": normalize_severity(f.get("severity", "UNKNOWN")),
                 "title": f.get("title", ""),
                 "description": f.get("description", ""),
-                "security_category": f.get("service", "UNKNOWN"),
-                "affected_resource_type": f.get("resource_type", "Unknown"),
-                "resource_name": f.get("resource", "Unknown"),
-                "full_address": f.get("resource", "Unknown"),
+                "security_category": aws_service.upper() if aws_service != "Unknown" else "UNKNOWN",
+                "affected_resource_type": f"aws_{aws_service}" if aws_service != "Unknown" else "Unknown",
+                "resource_name": r_name,
+                "full_address": r_arn,
                 "file_path": "RUNTIME",
-                "aws_service": f.get("service", "Unknown"),
+                "aws_service": aws_service,
                 "review_required": f.get("requires_review", False),
                 "framework_mapping": f.get("mapping_type"),
-                "compliance_mappings": f.get("standards_references", []),
+                "compliance_mappings": f.get("compliance", []),
                 "source_evidence_artifact": evidence["runtime_findings"]["path"],
                 "remediation": rem
             })
@@ -327,7 +401,7 @@ def _determine_category(path: str) -> str:
     if "deployment" in path: return "DEPLOYMENT"
     if "runtime" in path: return "RUNTIME_ANALYSIS"
     if "review" in path: return "SECURITY_REVIEW"
-    if "cleanup" in path: return "CLEANUP"
+    if "cleanup" in path or "destroy" in path: return "CLEANUP"
     return "UNKNOWN"
 
 def generate_evidence_manifest(scan_id: str, evidence: dict):
@@ -344,7 +418,7 @@ def generate_evidence_manifest(scan_id: str, evidence: dict):
         sha = sha256_file(str(abs_path)) if abs_path.is_file() else "UNKNOWN"
         category = _determine_category(original_path)
         cat_lower = category.lower().split("_")[0]
-        if cat_lower == "policy": cat_lower = "static" # group policy in static for s3 if desired, but let's stick to raw mappings
+        if cat_lower == "policy": cat_lower = "static"
         s3_prefix = f"raw/{scan_id}/{cat_lower}"
         
         manifest["artifacts"].append({
@@ -357,6 +431,21 @@ def generate_evidence_manifest(scan_id: str, evidence: dict):
             "export_timestamp": utc_now_iso()
         })
     return manifest
+
+
+def validate_dashboard_consistency(summary: dict, findings: list):
+    """Verify that finding counts match the explicit totals."""
+    pre = summary["pre_deployment"]
+    run = summary["runtime"]
+    
+    pre_calc = pre["critical_count"] + pre["high_count"] + pre["medium_count"] + pre["low_count"] + pre["unknown_count"]
+    run_calc = run["critical_count"] + run["high_count"] + run["medium_count"] + run["low_count"] + run["unknown_count"]
+    
+    if pre["total_findings"] != 0 and pre_calc != pre["total_findings"]:
+        print(f"WARNING: Pre-deployment severity counts ({pre_calc}) do not match total ({pre['total_findings']})!", file=sys.stderr)
+        
+    if run["finding_count"] != "NOT_EXECUTED" and run["finding_count"] != 0 and run_calc != run["finding_count"]:
+        print(f"WARNING: Runtime severity counts ({run_calc}) do not match total ({run['finding_count']})!", file=sys.stderr)
 
 
 def main():
@@ -374,11 +463,13 @@ def main():
     print("DASHBOARD EXPORT BUNDLE GENERATION")
     print("============================================================")
     print(f"Scan ID           : {scan_id}")
-    print(f"Raw Evidences     : {len(evidence)}")
+    print(f"Raw Evidences     : {len(evidence)} loaded")
 
     summary_doc = generate_scan_summary(scan_id, evidence)
     findings_doc = generate_findings(scan_id, evidence)
     manifest_doc = generate_evidence_manifest(scan_id, evidence)
+    
+    validate_dashboard_consistency(summary_doc, findings_doc["findings"])
     
     safe_write_json(str(out_dir / "scan-summary.json"), summary_doc)
     safe_write_json(str(out_dir / "findings.json"), findings_doc)
