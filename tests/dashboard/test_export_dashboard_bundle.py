@@ -5,6 +5,7 @@ import sys
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT_DIR))
 
+from scripts.review.review_utils import generate_finding_key
 from scripts.dashboard.export_dashboard_bundle import (
     _get_remediation_doc,
     _determine_category,
@@ -15,6 +16,10 @@ from scripts.dashboard.export_dashboard_bundle import (
 )
 
 class TestExportDashboardBundle(unittest.TestCase):
+    def test_generate_finding_key(self):
+        k = generate_finding_key("PRE_DEPLOYMENT", "checkov", "CKV_AWS_24", "aws_security_group", "Ensure no security groups allow ingress")
+        self.assertEqual(k, "PRE_DEPLOYMENT|checkov|CKV_AWS_24|aws_security_group|Ensure no security groups allow ingress")
+
     def test_determine_category(self):
         self.assertEqual(_determine_category("reports/static/SCAN/combined.json"), "STATIC_ANALYSIS")
         self.assertEqual(_determine_category("reports/policy/SCAN/policy.json"), "POLICY_ANALYSIS")
@@ -41,30 +46,37 @@ class TestExportDashboardBundle(unittest.TestCase):
         ai_data = {
             "guidance": [
                 {
-                    "finding_key": "checkov:CKV_AWS_1:aws_s3_bucket:abcd1234",
+                    "finding_key": "PRE_DEPLOYMENT|checkov|CKV_AWS_1|aws_s3_bucket|Bucket Title",
+                    "source": "OPENAI_WITH_SCANNER_CONTEXT",
+                    "priority": "HIGH",
                     "ai_guidance": {
                         "summary": "Fix this",
-                        "terraform_action": ["Do A"],
-                        "example": "example code",
-                        "runtime_action": ["Verify B"],
-                        "references": ["url1"]
+                        "terraform_action": "Do A",
+                        "runtime_action": "",
+                        "validation_step": "Verify B",
+                        "operational_caution": "Careful"
                     }
                 }
             ]
         }
-        res = _get_remediation_doc(ai_data, "checkov:CKV_AWS_1:aws_s3_bucket:abcd1234")
+        res = _get_remediation_doc(ai_data, "PRE_DEPLOYMENT|checkov|CKV_AWS_1|aws_s3_bucket|Bucket Title")
         self.assertTrue(res["available"])
         self.assertEqual(res["summary"], "Fix this")
         self.assertEqual(res["target"], "IAC_SOURCE")
+        self.assertEqual(res["source"], "OPENAI_WITH_SCANNER_CONTEXT")
+        self.assertEqual(res["priority"], "HIGH")
         self.assertEqual(res["steps"], ["Do A"])
-        self.assertEqual(res["terraform_example"], "example code")
+        self.assertEqual(res["verification"], ["Verify B"])
+        self.assertEqual(res["operational_caution"], "Careful")
+        self.assertEqual(res["runtime_action"], "")
 
     def test_get_remediation_doc_missing(self):
         ai_data = {"guidance": []}
-        res = _get_remediation_doc(ai_data, "checkov:CKV_AWS_1:aws_s3_bucket:abcd1234")
+        res = _get_remediation_doc(ai_data, "PRE_DEPLOYMENT|checkov|CKV_AWS_1|aws_s3_bucket|Bucket Title")
         self.assertFalse(res["available"])
 
     def test_generate_findings_with_remediation(self):
+        expected_key = generate_finding_key("PRE_DEPLOYMENT", "checkov", "CKV_AWS_1", "aws_s3_bucket", "Bad S3")
         evidence = {
             "enriched_findings": {
                 "path": "reports/risk/enriched.json",
@@ -75,7 +87,7 @@ class TestExportDashboardBundle(unittest.TestCase):
                         "source_rule_id": "CKV_AWS_1",
                         "final_severity": "HIGH",
                         "title": "Bad S3",
-                        "description": "Bucket public " * 5,  # Needs to match md5 logic if we care, but mock handles it
+                        "description": "Bucket public",
                         "resource_type": "aws_s3_bucket",
                         "resource": "aws_s3_bucket.main"
                     }]
@@ -85,7 +97,8 @@ class TestExportDashboardBundle(unittest.TestCase):
                 "data": {
                     "guidance": [
                         {
-                            "finding_key": "checkov:CKV_AWS_1:aws_s3_bucket:c3f15c7a",  # md5("Bucket public Bucket public Bucket public Bucket p") -> c3f15c7a
+                            "finding_key": expected_key,
+                            "source": "LOCAL_AI_REMEDIATION_CACHE",
                             "ai_guidance": {
                                 "summary": "Block public access"
                             }
@@ -101,6 +114,7 @@ class TestExportDashboardBundle(unittest.TestCase):
         self.assertEqual(f["severity"], "HIGH")
         self.assertTrue(f["remediation"]["available"])
         self.assertEqual(f["remediation"]["summary"], "Block public access")
+        self.assertEqual(f["remediation"]["source"], "LOCAL_AI_REMEDIATION_CACHE")
 
     def test_generate_findings_runtime_fallback_remediation(self):
         evidence = {
@@ -110,6 +124,8 @@ class TestExportDashboardBundle(unittest.TestCase):
                     "findings": [{
                         "finding_id": "FIND-002",
                         "source_tool": "prowler",
+                        "control_id": "EC2_1",
+                        "title": "EC2 unencrypted",
                         "severity": "{'ORIGINAL': 'CRITICAL', 'NORMALIZED': 'CRITICAL', 'SOURCE': 'PROWLER_METADATA'}",
                         "remediation": {
                             "text": "Prowler native text",
@@ -119,6 +135,11 @@ class TestExportDashboardBundle(unittest.TestCase):
                             "arn": "arn:aws:ec2:us-east-1:123456789012:instance/i-1234567890abcdef0"
                         }
                     }]
+                }
+            },
+            "ai_remediation": {
+                "data": {
+                    "guidance": []
                 }
             }
         }
@@ -135,7 +156,6 @@ class TestExportDashboardBundle(unittest.TestCase):
         self.assertEqual(f["remediation"]["references"], ["http://prowler.url"])
 
     def test_generate_scan_summary_missing_data(self):
-        # Empty evidence should not crash and fallback safely
         result = generate_scan_summary("SCAN-EMPTY", {})
         self.assertEqual(result["scan_id"], "SCAN-EMPTY")
         self.assertEqual(result["pre_deployment"]["risk_score"], "NOT_AVAILABLE")

@@ -19,6 +19,7 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT_DIR))
 from scripts.utils.evidence import safe_read_json, safe_write_json, sha256_file, utc_now_iso
+from scripts.review.review_utils import generate_finding_key
 
 # Authoritative raw evidence locations relative to ROOT_DIR
 EVIDENCE_PATHS = {
@@ -259,22 +260,35 @@ def _get_remediation_doc(remediation_data, finding_key):
     if not remediation_data:
         return {"available": False}
     
-    # New AI Remediation format: {"guidance": [ {"finding_key": ..., "ai_guidance": ...}, ... ]}
     guidance_list = remediation_data.get("guidance", [])
     
     for item in guidance_list:
         if item.get("finding_key") == finding_key:
             ai = item.get("ai_guidance", {})
-            return {
+            rem = {
                 "available": True,
-                "target": "IAC_SOURCE",
+                "target": "IAC_SOURCE", # We'll default to IAC_SOURCE, might be overridden
+                "source": item.get("source", "OPENAI_WITH_SCANNER_CONTEXT"),
+                "priority": item.get("priority", "UNKNOWN"),
                 "summary": ai.get("summary", ""),
-                "steps": ai.get("terraform_action", []),
-                "terraform_example": ai.get("example", ""),
-                "verification": ai.get("runtime_action", []),
-                "references": ai.get("references", []),
-                "source": "AI_REMEDIATION"
+                "steps": [],
+                "runtime_action": ai.get("runtime_action", ""),
+                "verification": [],
+                "operational_caution": ai.get("operational_caution", ""),
+                "scanner_remediation": item.get("scanner_remediation", ""),
+                "affected_finding_ids": item.get("affected_finding_ids", []),
+                "affected_resource_count": item.get("affected_resource_count", 0)
             }
+            
+            tf_action = ai.get("terraform_action", "")
+            if tf_action:
+                rem["steps"].append(tf_action)
+                
+            val_step = ai.get("validation_step", "")
+            if val_step:
+                rem["verification"].append(val_step)
+                
+            return rem
             
     return {"available": False}
 
@@ -296,12 +310,14 @@ def generate_findings(scan_id: str, evidence: dict):
             original_scanner_id = f.get("source_rule_id", "UNKNOWN")
             resource = f.get("resource", "Unknown")
             
-            # Reconstruct the AI engine finding_key logic roughly (source_tool:source_rule_id:resource_type:hash)
-            # Actually, the simplest is to match the exact mechanism AI uses if possible.
-            # We'll just look up by a known key structure, or if finding_key isn't populated on `f`, we'll build it.
-            f_desc = f.get("description", "")[:50]
-            f_desc_hash = hashlib.md5(f_desc.encode()).hexdigest()[:8]
-            expected_finding_key = f"{scanner}:{original_scanner_id}:{f.get('resource_type')}:{f_desc_hash}"
+            # Reconstruct exact AI finding key
+            expected_finding_key = generate_finding_key(
+                "PRE_DEPLOYMENT",
+                scanner,
+                original_scanner_id,
+                f.get("resource_type", ""),
+                f.get("title", "")
+            )
             
             rem = _get_remediation_doc(ai_remediation, expected_finding_key)
             
@@ -341,7 +357,18 @@ def generate_findings(scan_id: str, evidence: dict):
             r_arn = res_obj.get("arn", "Unknown")
             r_name = res_obj.get("name") or res_obj.get("id") or "Unknown"
             
-            expected_finding_key = f"{scanner}:{original_scanner_id}:runtime:n/a" # AI doesn't typically enrich runtime the exact same way natively, but let's safely fall back
+            resource_type = f.get("affected_resource_type", f.get("resource_type", ""))
+            if not resource_type and r_arn != "Unknown":
+                # Try to extract resource type from prowler rule or arn
+                resource_type = f.get("title", "") # fallback if AI used it
+                
+            expected_finding_key = generate_finding_key(
+                "POST_DEPLOYMENT",
+                scanner,
+                original_scanner_id,
+                resource_type,
+                f.get("title", "")
+            )
             
             rem = _get_remediation_doc(ai_remediation, expected_finding_key)
             
@@ -478,6 +505,38 @@ def main():
     print(f"Findings Exported : {len(findings_doc['findings'])}")
     print(f"Bundle Saved      : dashboard-export/{scan_id}/")
     print("============================================================")
+    
+    # Calculate Remediation Diagnostics
+    total = len(findings_doc["findings"])
+    pre = sum(1 for f in findings_doc["findings"] if f.get("phase") == "PRE_DEPLOYMENT")
+    post = sum(1 for f in findings_doc["findings"] if f.get("phase") == "POST_DEPLOYMENT")
+    
+    ai_guidance_entries = len(evidence.get("ai_remediation", {}).get("data", {}).get("guidance", []))
+    ai_matches = sum(1 for f in findings_doc["findings"] if f.get("remediation", {}).get("source") in ("OPENAI_WITH_SCANNER_CONTEXT", "LOCAL_AI_REMEDIATION_CACHE", "AI_REMEDIATION"))
+    ai_unmatched = ai_guidance_entries - ai_matches
+    
+    prowler_rem = sum(1 for f in findings_doc["findings"] if f.get("remediation", {}).get("source") == "PROWLER")
+    no_rem = sum(1 for f in findings_doc["findings"] if not f.get("remediation", {}).get("available"))
+    
+    print("\n============================================================")
+    print("DASHBOARD REMEDIATION EXPORT")
+    print("============================================================")
+    print(f"Total Findings              : {total}")
+    print(f"Pre-Deployment Findings     : {pre}")
+    print(f"Post-Deployment Findings    : {post}")
+    print("")
+    print(f"AI Guidance Entries         : {ai_guidance_entries}")
+    print(f"AI Matches                  : {ai_matches}")
+    print(f"AI Unmatched                : {ai_unmatched}")
+    print("")
+    print(f"Prowler Remediation         : {prowler_rem}")
+    print(f"No Remediation              : {no_rem}")
+    print("============================================================")
+    
+    if ai_guidance_entries > 0 and ai_matches == 0:
+        print("WARNING: AI remediation evidence exists but no findings were matched.", file=sys.stderr)
+        print("Check finding-key normalization.", file=sys.stderr)
+
 
 
 if __name__ == "__main__":

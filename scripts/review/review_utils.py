@@ -47,3 +47,8 @@ def get_risk_band_index(band: str) -> int:
 
 def sort_findings_by_severity(findings: list[dict]) -> list[dict]:
     return sorted(findings, key=lambda f: SEVERITY_ORDER.get(f.get("severity", "UNKNOWN").upper(), 99))
+
+def generate_finding_key(stage: str, scanner: str, check_id: str, resource_type: str, title: str) -> str:
+    """Deterministic exact key generation matching AI cache and review tools."""
+    parts = [str(x).strip() for x in (stage, scanner, check_id, resource_type, title)]
+    return "|".join(parts)

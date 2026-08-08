@@ -13,7 +13,7 @@ except ImportError:
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT_DIR))
 
-from scripts.review.review_utils import safe_read_json, safe_write_json
+from scripts.review.review_utils import safe_read_json, safe_write_json, generate_finding_key
 from scripts.review.remediation_cache import generate_cache_key, load_cache, save_cache
 from scripts.utils.evidence import utc_now_iso
 
@@ -60,10 +60,6 @@ Return JSON in this format exactly:
   ]
 }
 """
-
-def generate_finding_key(stage: str, scanner: str, check_id: str, resource_type: str, title: str) -> str:
-    parts = [str(x).strip() for x in (stage, scanner, check_id, resource_type, title)]
-    return "|".join(parts)
 
 def build_remediation_groups(security_review: dict) -> dict:
     groups = {}
